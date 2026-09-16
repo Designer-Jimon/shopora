@@ -13,8 +13,11 @@ export default function LandingPage() {
             <Link href="/dashboard" className="text-sm font-medium text-[var(--color-text-muted)] hover:text-[var(--color-primary)]">
               Dashboard
             </Link>
+            <Link href="/login" className="text-sm font-medium text-[var(--color-text-muted)] hover:text-[var(--color-primary)]">
+              Log in
+            </Link>
             <Link
-              href="/dashboard"
+              href="/register"
               className="rounded-md bg-[var(--color-primary)] px-3 py-1.5 text-sm font-semibold text-white"
             >
               Get Started
@@ -50,7 +53,7 @@ export default function LandingPage() {
       </section>
 
       {/* Feature strip */}
-      <section className="border-t border-[var(--color-border)] bg-[var(--color-primary-50)]">
+      <section id="how-it-works" className="border-t border-[var(--color-border)] bg-[var(--color-primary-50)]">
         <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:grid-cols-3 sm:px-6">
           {[
             ['Build', 'A storefront on your own domain in minutes.'],

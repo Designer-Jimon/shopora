@@ -19,6 +19,7 @@
     "test:dashboard": "node scripts/verify-dashboard.mjs",
     "test:products": "node scripts/verify-products.mjs",
     "test:auth-pages": "node scripts/verify-auth-pages.mjs",
+    "test:storefront": "node scripts/verify-storefront.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {

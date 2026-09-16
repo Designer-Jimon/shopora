@@ -5,7 +5,7 @@ Multi-tenant e-commerce SaaS for Nigerian and African businesses.
 ## Stack (Phase 1 + 2)
 
 - **Frontend + API**: Next.js 14 (App Router) â€” single app, route groups
-  - `(storefront)` â€” customer-facing tenant storefronts (`/:slug`)
+  - `(storefront)` â€” customer-facing tenant storefronts (`/:slug`, `/:slug/products`, `/:slug/products/:productSlug`)
   - `(dashboard)` â€” business owner/staff workspace (`/dashboard`)
   - `/api/*` â€” API routes (auth + health)
 - **Database**: PostgreSQL + Prisma
@@ -42,6 +42,7 @@ npm run db:studio          # browse the database
 ```bash
 npm run test:core          # headless core auth logic against live DB (registerâ†’JWTâ†’tenant resolutionâ†’suspension)
 npm run test:api           # HTTP E2E against a running server (set API_BASE, e.g. http://localhost:3000)
+npm run test:storefront    # Phase 6 storefront E2E (tenant-by-slug, theme isolation, 404s, listing filters)
 ```
 
 ## API routes (Phase 2)
@@ -115,11 +116,12 @@ scripts/
   verify-http.mjs          # HTTP E2E auth test
   verify-dashboard.mjs     # Phase 4 dashboard shell E2E
   verify-products.mjs      # Phase 5 catalog/inventory/tenant-isolation E2E
+  verify-storefront.mjs    # Phase 6 storefront E2E (tenant-by-slug, theme, filters)
 src/
   app/
     layout.tsx             # root layout (design tokens applied globally)
     page.tsx               # landing page
-    (storefront)/          # tenant storefront group
+    (storefront)/          # tenant storefront group (home, products listing, product detail)
     (onboarding)/          # guided business onboarding (Phase 3)
     (dashboard)/           # dashboard group (auth-aware nav)
       products/            # All Products, Add/Edit, Categories, Inventory
@@ -141,6 +143,8 @@ src/
     dashboard.ts           # dashboard access resolve + onboarding guard
     dashboard-nav.ts       # permission-filtered dashboard navigation
     catalog.ts             # product/category/inventory server helpers (Phase 5)
+    storefront.ts          # public storefront tenant resolution + queries (Phase 6)
+    format.ts              # display helpers (₦ price formatting, discount %)
     storage.ts             # local disk file storage (logos/banners/product images)
     auth/                  # password, jwt, session, permissions
 ```

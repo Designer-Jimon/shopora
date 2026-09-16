@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * SHOPORA design tokens
+ * Mobile-first: base styles target small screens; smoke/lg breakpoints
+ * progressively enhance. Default brand theme is white + wine red (#722F37).
+ *
+ * Theme is overridable at the tenant (business) level. A per-business
+ * override would set the equivalent CSS custom properties on a wrapper
+ * element / :root scope, e.g. from Business.themeConfig JSON.
+ */
+
+:root {
+  /* Brand palette — default SHOPORA theme */
+  --color-primary: #722f37;      /* wine red */
+  --color-primary-50: #fdf2f4;
+  --color-primary-100: #fce7eb;
+  --color-primary-200: #f9d0d9;
+  --color-primary-300: #f4a9b8;
+  --color-primary-400: #ec7693;
+  --color-primary-500: #e04d70;
+  --color-primary-600: #cc2d5a;
+  --color-primary-700: #ab2049;
+  --color-primary-800: #8f1d40;
+  --color-primary-900: #722f37;
+  --color-primary-950: #4a0f20;
+
+  --color-secondary: #ffffff;    /* white */
+
+  /* Neutrals */
+  --color-background: #ffffff;
+  --color-surface: #ffffff;
+  --color-text: #1a1a1a;
+  --color-text-muted: #6b7280;
+  --color-border: #e5e7eb;
+
+  /* Semantic */
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-danger: #b91c1c;
+  --color-info: #1d4ed8;
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+}
+
+/*
+ * Spacing scale (mobile-first rhythm)
+ * Cosmetic tokens used across every layout decision.
+ */
+.font-spacing-scale {
+  /* Intentionally empty; spacing tokens live here for documentation.
+     Tailwind's spacing scale is used directly in components. */
+}
+
+/*
+ * Mobile-first breakpoints
+ * sm  640px | md  768px | lg 1024px | xl 1280px | 2xl 1536px
+ * These mirror tailwind.config.js and are expressed as min-width media
+ * queries so base styles are always mobile-first.
+ * Defined here for documentation/use in plain-CSS contexts (e.g. theme files).
+ */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-text);
+    font-family:
+      'Inter',
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 700;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  a {
+    color: var(--color-primary);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  img,
+  video {
+    max-width: 100%;
+    height: auto;
+  }
+
+  button {
+    cursor: pointer;
+  }
+}
+
+/* Utility: hide an element but keep it accessible to screen readers */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

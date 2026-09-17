@@ -185,6 +185,16 @@ async function main() {
   ok('detail shows Add to cart stub', detail.text.includes('Add to cart'));
   ok('detail shows Buy now stub', detail.text.includes('Buy now'));
 
+  const slugJacket = productNames['Denim Jacket'];
+  const jacketDetail = await req(`/${slugA}/products/${slugJacket}`);
+  ok('no-variant low stock shows "Only 2 left in stock"', jacketDetail.text.includes('Only 2 left in stock'), 'Jacket detail');
+  const slugSandals = productNames['Leather Sandals'];
+  const sandalsDetail = await req(`/${slugA}/products/${slugSandals}`);
+  ok('no-variant in-stock shows "In stock"', sandalsDetail.text.includes('In stock'), 'Sandals detail');
+  const slugNecklace = productNames['Gold Necklace'];
+  const necklaceDetail = await req(`/${slugA}/products/${slugNecklace}`);
+  ok('no-variant out-of-stock shows "Sold out"', necklaceDetail.text.includes('Sold out'), 'Necklace detail');
+
   console.log('\n6. Global theming untouched by storefront overrides');
   const landing = await req('/');
   ok('landing 200', landing.status === 200, `status=${landing.status}`);

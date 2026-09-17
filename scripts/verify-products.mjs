@@ -128,10 +128,14 @@ async function main() {
     name: 'Leather Sandals', brand: 'Nike', sku: 'SNK-002', price: 15000, status: 'draft', categoryId: cat.id, stockQuantity: 2,
   }, authA);
   ok('second product created', prod2.status === 201, `status=${prod2.status}`);
+  ok('second product persisted base stockQuantity=2', prod2.data?.stockQuantity === 2, `got=${prod2.data?.stockQuantity}`);
+  ok('second product has no variants → effectiveStock = base stock (2)', prod2.data?.effectiveStock === 2, `got=${prod2.data?.effectiveStock}`);
   const prod2b = await req('/api/products', 'POST', {
     name: 'Silk Scarf', sku: 'SCF-003', price: 8000, status: 'active', stockQuantity: 0,
   }, authA);
   ok('third product created', prod2b.status === 201, `status=${prod2b.status}`);
+  ok('third product persisted base stockQuantity=0', prod2b.data?.stockQuantity === 0, `got=${prod2b.data?.stockQuantity}`);
+  ok('third product effectiveStock uses base stock (0)', prod2b.data?.effectiveStock === 0, `got=${prod2b.data?.effectiveStock}`);
 
   console.log('\n4. Inventory adjustment → InventoryTransaction + stock');
   const adjustR = await req('/api/inventory', 'POST', { productId: prod.id, variantId: prod.variants[0].id, changeQty: 25, reason: 'Restock from supplier' }, authA);
@@ -183,6 +187,14 @@ async function main() {
   const patchR = await req(`/api/products/${prod2.data.id}`, 'PATCH', { price: 14000, status: 'active' }, authA);
   ok('product updated', patchR.status === 200, `status=${patchR.status} ${JSON.stringify(patchR.data)}`);
   ok('updated price persisted', patchR.data?.price === 14000, `got=${patchR.data?.price}`);
+  ok('updated product still keeps base stockQuantity=2', patchR.data?.stockQuantity === 2, `got=${patchR.data?.stockQuantity}`);
+
+  const patchStockR = await req(`/api/products/${prod2b.data.id}`, 'PATCH', { stockQuantity: 20 }, authA);
+  ok('base stockQuantity updated via PATCH', patchStockR.status === 200 && patchStockR.data?.stockQuantity === 20, `status=${patchStockR.status} got=${patchStockR.data?.stockQuantity}`);
+  const fetchedStock = await req(`/api/products/${prod2b.data.id}`, 'GET', undefined, authA);
+  ok('PATCHed base stock persisted and effectiveStock=20', fetchedStock.data?.stockQuantity === 20 && fetchedStock.data?.effectiveStock === 20, `got=${fetchedStock.data?.stockQuantity}/${fetchedStock.data?.effectiveStock}`);
+  const stockOutAfterPatch = await req('/api/products?stock=out', 'GET', undefined, authA);
+  ok('silky scarf (20) not counted as out of stock', !stockOutAfterPatch.data?.products?.some((p) => p.id === prod2b.data.id), `ids=${stockOutAfterPatch.data?.products?.map((p) => p.id).join(',')}`);
 
   const delR = await req(`/api/products/${prod2b.data.id}`, 'DELETE', undefined, authA);
   ok('product deleted', delR.status === 204, `status=${delR.status}`);

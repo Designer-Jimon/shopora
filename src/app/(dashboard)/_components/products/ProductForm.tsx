@@ -26,6 +26,7 @@ type ProductFormData = {
   price: string;
   discountPrice: string;
   status: string;
+  stockQuantity: string;
   categoryId: string;
   seoTitle: string;
   seoDescription: string;
@@ -43,6 +44,7 @@ type ProductFormProps = {
     price: number;
     discountPrice: number | null;
     status: string;
+    stockQuantity: number;
     categoryId: string | null;
     seoTitle: string | null;
     seoDescription: string | null;
@@ -97,6 +99,7 @@ export default function ProductForm({ categories, initialData, isEdit = false }:
     price: initialData?.price?.toString() ?? '',
     discountPrice: initialData?.discountPrice?.toString() ?? '',
     status: initialData?.status ?? 'draft',
+    stockQuantity: initialData?.stockQuantity?.toString() ?? '',
     categoryId: initialData?.categoryId ?? '',
     seoTitle: initialData?.seoTitle ?? '',
     seoDescription: initialData?.seoDescription ?? '',
@@ -154,6 +157,7 @@ export default function ProductForm({ categories, initialData, isEdit = false }:
       ...form,
       price: parseFloat(form.price) || 0,
       discountPrice: form.discountPrice ? parseFloat(form.discountPrice) : null,
+      stockQuantity: parseInt(form.stockQuantity, 10) || 0,
       categoryId: form.categoryId || null,
       imageUrls: imageUrls.map((img) => img.url),
       variants: form.variants.filter((v) => v.color || v.size || v.sku).map((v) => ({
@@ -211,7 +215,7 @@ export default function ProductForm({ categories, initialData, isEdit = false }:
 
       <div className="rounded-lg border border-[var(--color-border)] bg-white p-4">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Pricing &amp; status</h2>
-        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Input label="Price (NGN)" name="price" value={form.price} onChange={(e) => update('price', e.target.value)} type="number" step="0.01" min="0" required />
           <Input label="Discount price (optional)" name="discountPrice" value={form.discountPrice} onChange={(e) => update('discountPrice', e.target.value)} type="number" step="0.01" min="0" />
           <div>
@@ -223,6 +227,7 @@ export default function ProductForm({ categories, initialData, isEdit = false }:
               <option value="archived">Archived</option>
             </select>
           </div>
+          <Input label="Stock quantity" name="stockQuantity" value={form.stockQuantity} onChange={(e) => update('stockQuantity', e.target.value)} type="number" min="0" placeholder="0" />
         </div>
       </div>
 

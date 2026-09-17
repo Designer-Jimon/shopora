@@ -1,8 +1,10 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
+import { cookies } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { getStorefrontBusiness } from '@/lib/storefront';
+import { getCartCount } from '@/lib/cart';
 import { themeCssVars } from '@/lib/theme';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +40,9 @@ export default async function StorefrontLayout({
 }) {
   const biz = await getStorefrontBusiness(params.slug);
   if (!biz) notFound();
+
+  const sessionId = (await cookies()).get('shopora_cart_session')?.value;
+  const cartCount = sessionId ? await getCartCount(biz.id, sessionId) : 0;
 
   return (
     <>
@@ -77,6 +82,22 @@ export default async function StorefrontLayout({
                 className="text-sm font-medium text-[var(--sf-muted)] hover:text-[var(--sf-primary)]"
               >
                 Products
+              </Link>
+              <Link
+                href={`/${biz.slug}/cart`}
+                aria-label={`Cart, ${cartCount} items`}
+                className="relative rounded-md border px-3 py-1.5 text-sm font-semibold transition hover:brightness-95"
+                style={{ borderColor: 'var(--sf-border)', color: 'var(--sf-text)' }}
+              >
+                Cart
+                {cartCount > 0 && (
+                  <span
+                    className="absolute -top-2 -right-2 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold"
+                    style={{ background: 'var(--sf-primary)', color: 'var(--sf-on-primary)' }}
+                  >
+                    {cartCount > 99 ? '99+' : cartCount}
+                  </span>
+                )}
               </Link>
               <Link
                 href="/"

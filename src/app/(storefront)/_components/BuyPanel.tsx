@@ -1,10 +1,19 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { SerializedProduct } from '@/lib/catalog';
 import { formatPrice } from '@/lib/format';
 
-export default function BuyPanel({ product }: { product: SerializedProduct }) {
+export default function BuyPanel({
+  product,
+  slug,
+}: {
+  product: SerializedProduct;
+  slug: string;
+}) {
+  const router = useRouter();
   const { variants } = product;
 
   const colors = useMemo(
@@ -19,7 +28,8 @@ export default function BuyPanel({ product }: { product: SerializedProduct }) {
   const [color, setColor] = useState<string | null>(colors[0] ?? null);
   const [size, setSize] = useState<string | null>(sizes[0] ?? null);
   const [qty, setQty] = useState(1);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const selectedVariant = useMemo(() => {
     if (variants.length === 0) return null;
@@ -37,8 +47,35 @@ export default function BuyPanel({ product }: { product: SerializedProduct }) {
   const displayPrice = product.discountPrice != null ? Math.min(product.discountPrice, price) : price;
   const savings = price - displayPrice;
 
-  function handleBuy() {
-    setNotice('Cart & checkout arrive in Phase 7 — coming soon.');
+  async function addToCart(buyNow = false) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/store/${slug}/cart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productId: product.id,
+          variantId: selectedVariant?.id ?? null,
+          quantity: qty,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setNotice({ kind: 'err', text: data?.error ?? 'Could not add to cart' });
+        return;
+      }
+      router.refresh();
+      if (buyNow) {
+        router.push(`/${slug}/checkout`);
+      } else {
+        setNotice({ kind: 'ok', text: 'Added to cart' });
+      }
+    } catch {
+      setNotice({ kind: 'err', text: 'Network error — please try again' });
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -143,12 +180,12 @@ export default function BuyPanel({ product }: { product: SerializedProduct }) {
         </div>
       </div>
 
-      {/* Actions (stubbed — cart/checkout is Phase 7) */}
+      {/* Actions */}
       <div className="mt-5 grid grid-cols-2 gap-3">
         <button
           type="button"
-          disabled={out}
-          onClick={handleBuy}
+          disabled={out || busy}
+          onClick={() => addToCart(false)}
           className="rounded-md border px-4 py-2.5 text-sm font-semibold transition hover:brightness-95 disabled:opacity-50"
           style={{
             borderColor: 'var(--sf-primary)',
@@ -156,12 +193,12 @@ export default function BuyPanel({ product }: { product: SerializedProduct }) {
             color: 'var(--sf-primary)',
           }}
         >
-          Add to cart
+          {busy ? 'Adding…' : 'Add to cart'}
         </button>
         <button
           type="button"
-          disabled={out}
-          onClick={handleBuy}
+          disabled={out || busy}
+          onClick={() => addToCart(true)}
           className="rounded-md px-4 py-2.5 text-sm font-semibold transition hover:brightness-110 disabled:opacity-50"
           style={{ background: 'var(--sf-primary)', color: 'var(--sf-on-primary)' }}
         >
@@ -170,8 +207,23 @@ export default function BuyPanel({ product }: { product: SerializedProduct }) {
       </div>
 
       {notice && (
-        <p className="mt-3 rounded-md px-3 py-2 text-sm" style={{ background: 'var(--sf-tint)', color: 'var(--sf-text)' }}>
-          {notice}
+        <p
+          className="mt-3 rounded-md px-3 py-2 text-sm"
+          style={{
+            background: 'var(--sf-tint)',
+            color: notice.kind === 'ok' ? 'var(--sf-text)' : '#b91c1c',
+          }}
+        >
+          {notice.kind === 'ok' ? (
+            <>
+              {notice.text}{' '}
+              <Link href={`/${slug}/cart`} className="font-semibold underline">
+                View cart
+              </Link>
+            </>
+          ) : (
+            notice.text
+          )}
         </p>
       )}
     </div>

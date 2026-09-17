@@ -43,6 +43,7 @@ npm run db:studio          # browse the database
 npm run test:core          # headless core auth logic against live DB (registerâ†’JWTâ†’tenant resolutionâ†’suspension)
 npm run test:api           # HTTP E2E against a running server (set API_BASE, e.g. http://localhost:3000)
 npm run test:storefront    # Phase 6 storefront E2E (tenant-by-slug, theme isolation, 404s, listing filters)
+npm run test:checkout      # Phase 7 guest cart + checkout E2E (cookie cart, order/stock/inventory, isolation)
 ```
 
 ## API routes (Phase 2)
@@ -79,6 +80,28 @@ Product status values: `draft` | `active` | `archived`. Every catalog query is
 scoped by the verified session's `businessId` — no endpoint accepts a client
 `businessId`.
 
+### Storefront cart + checkout (Phase 7)
+
+Guest carts are identified by the `shopora_cart_session` cookie (httpOnly,
+30-day, contains a random session id), scoped per business.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/store/:slug/cart` | Read the session cart (lines + totals). Public. |
+| POST | `/api/store/:slug/cart` | Add item (`{ productId, variantId?, quantity }`); merges same product+variant. Sets the cart cookie on first use. |
+| PATCH | `/api/store/:slug/cart` | Update a line's quantity (`{ itemId, quantity }`). |
+| DELETE | `/api/store/:slug/cart/:itemId` | Remove a line. |
+| POST | `/api/store/:slug/checkout` | Place an order: validates stock, decrements it (race-safe `updateMany`), writes `InventoryTransaction` rows, snapshots prices into `OrderItem`, writes `OrderStatusHistory`, empties the cart. Guests and logged-in customers both supported. |
+
+Storefront pages: `/:slug/cart` (cart + quantity steppers), `/:slug/checkout`
+(4-step wizard: contact → address → delivery method → review), and
+`/:slug/orders/:orderId` (order confirmation). Delivery methods default to
+Pickup (free) / Standard (₦1,500) / Express (₦3,000), overridable per business
+via `Business.deliveryConfig.methods`.
+
+Orders start in `status: "payment_pending"` — payment processing and the
+dashboard order-management (status flows) arrive in Phase 8.
+
 Session payload (access JWT): `sub`(userId), `role` (`business_user`/`customer`/`platform_admin`), `businessId?`, `businessRole?` (Owner/Staff), `permissions[]` resolved from `role_permissions`.
 
 ## Multi-tenancy pattern
@@ -108,7 +131,8 @@ call `requireAuth()` inside a `withTenant`-wrapped handler.
 ```
 prisma/
   schema.prisma            # models (User, Business, BusinessStaff, Role, Permission, RolePermission,
-                           #   Category, Product, ProductImage, ProductVariant, InventoryTransaction)
+                           #   Category, Product, ProductImage, ProductVariant, InventoryTransaction,
+                           #   Cart, CartItem, Order, OrderItem, OrderStatusHistory)
   migrations/              # versioned SQL migrations
   seed.ts                  # system roles/permissions
 scripts/
@@ -117,20 +141,23 @@ scripts/
   verify-dashboard.mjs     # Phase 4 dashboard shell E2E
   verify-products.mjs      # Phase 5 catalog/inventory/tenant-isolation E2E
   verify-storefront.mjs    # Phase 6 storefront E2E (tenant-by-slug, theme, filters)
+  verify-checkout.mjs      # Phase 7 guest cart + checkout E2E (cookie, order/stock/isolation)
 src/
   app/
     layout.tsx             # root layout (design tokens applied globally)
     page.tsx               # landing page
-    (storefront)/          # tenant storefront group (home, products listing, product detail)
+    (storefront)/          # tenant storefront group (home, products, product detail, cart, checkout, orders)
     (onboarding)/          # guided business onboarding (Phase 3)
     (dashboard)/           # dashboard group (auth-aware nav)
       products/            # All Products, Add/Edit, Categories, Inventory
+      sales/orders/        # order list (read-only) (Phase 7)
     api/
       auth/                # register, login, logout, refresh, forgot/reset-password, me
       businesses/          # onboarding: me, complete, upload, check/suggest-slug
       categories/          # category list/create + [id] update/delete (Phase 5)
       products/            # product list/create + [id] update/delete (Phase 5)
       inventory/           # stock levels + adjustments (Phase 5)
+      store/[slug]/        # cart + checkout (Phase 7)
       uploads/product/     # product image upload (Phase 5)
       health/route.ts      # health check
   lib/
@@ -144,6 +171,8 @@ src/
     dashboard-nav.ts       # permission-filtered dashboard navigation
     catalog.ts             # product/category/inventory server helpers (Phase 5)
     storefront.ts          # public storefront tenant resolution + queries (Phase 6)
+    cart.ts                # guest cart cookie + CRUD helpers (Phase 7)
+    order.ts               # delivery methods, placeOrder transaction, order view (Phase 7)
     format.ts              # display helpers (₦ price formatting, discount %)
     storage.ts             # local disk file storage (logos/banners/product images)
     auth/                  # password, jwt, session, permissions

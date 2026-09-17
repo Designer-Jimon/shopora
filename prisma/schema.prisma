@@ -30,6 +30,8 @@ model User {
   updatedAt                DateTime  @updatedAt
 
   staffRoles BusinessStaff[]
+  carts      Cart[]
+  orders     Order[]
 
   @@index([email])
   @@index([phone])
@@ -66,10 +68,14 @@ model Business {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  staff BusinessStaff[]
-  categories  Category[]
-  products    Product[]
-  inventory   InventoryTransaction[]
+  deliveryConfig  Json @default("{}")
+
+  staff      BusinessStaff[]
+  categories Category[]
+  products   Product[]
+  inventory  InventoryTransaction[]
+  carts      Cart[]
+  orders     Order[]
 
   @@index([slug])
   @@index([isActive])
@@ -208,6 +214,8 @@ model Product {
   images    ProductImage[]
   variants  ProductVariant[]
   inventory InventoryTransaction[]
+  cartItems CartItem[]
+  orderItems OrderItem[]
 
   @@unique([businessId, slug])
   @@index([businessId])
@@ -250,8 +258,126 @@ model ProductVariant {
 
   product   Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
   inventory InventoryTransaction[]
+  cartItems CartItem[]
+  orderItems OrderItem[]
 
   @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Cart — guest/session cart scoped to a business. Identified by
+// (businessId, sessionId) where sessionId comes from the shopora_cart_session
+// cookie. userId is optional reference for logged-in customers.
+// ---------------------------------------------------------------------------
+model Cart {
+  id         String   @id @default(cuid())
+  businessId String
+  sessionId  String
+  userId     String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  items    CartItem[]
+
+  @@unique([businessId, sessionId])
+  @@index([businessId])
+  @@index([sessionId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// CartItem — line item in a cart. Quantity is user-editable. Price is
+// snapshotted from the product/variant at checkout time, not here.
+// ---------------------------------------------------------------------------
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  productId String
+  variantId String?
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart    Cart            @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([cartId])
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Order — a placed order. status flows: payment_pending → confirmed →
+// processing → shipped/delivered → cancelled. Totals are snapshotted.
+// ---------------------------------------------------------------------------
+model Order {
+  id              String   @id @default(cuid())
+  businessId      String
+  userId          String?
+  orderNumber     String   @default("")
+  status          String   @default("payment_pending")
+  customerName    String
+  customerEmail   String
+  customerPhone   String?
+  deliveryMethod  String   @default("standard")
+  deliveryAddress Json?
+  subtotal        Decimal  @db.Decimal(12, 2)
+  discountTotal   Decimal  @db.Decimal(12, 2) @default(0)
+  deliveryFee     Decimal  @db.Decimal(12, 2) @default(0)
+  total           Decimal  @db.Decimal(12, 2)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  business Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  items    OrderItem[]
+  history  OrderStatusHistory[]
+
+  @@index([businessId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// OrderItem — price snapshot per line at order time. productName/variantLabel
+// survive future product edits.
+// ---------------------------------------------------------------------------
+model OrderItem {
+  id           String   @id @default(cuid())
+  orderId      String
+  productId    String
+  variantId    String?
+  productName  String
+  variantLabel String?
+  quantity     Int
+  unitPrice    Decimal  @db.Decimal(12, 2)
+  total        Decimal  @db.Decimal(12, 2)
+  createdAt    DateTime @default(now())
+
+  order   Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant ProductVariant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+}
+
+// ---------------------------------------------------------------------------
+// OrderStatusHistory — immutable audit trail of status transitions.
+// ---------------------------------------------------------------------------
+model OrderStatusHistory {
+  id        String   @id @default(cuid())
+  orderId   String
+  status    String
+  note      String?
+  changedAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
 }
 
 // ---------------------------------------------------------------------------

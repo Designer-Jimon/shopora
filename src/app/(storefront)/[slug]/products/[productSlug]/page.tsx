@@ -79,7 +79,7 @@ export default async function StoreProductDetail({
           )}
 
           <div className="mt-6">
-            <BuyPanel product={product} />
+            <BuyPanel product={product} slug={biz.slug} />
           </div>
 
           {product.sku && (

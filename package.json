@@ -22,6 +22,7 @@
     "test:storefront": "node scripts/verify-storefront.mjs",
     "test:checkout": "node scripts/verify-checkout.mjs",
     "test:payments": "node scripts/verify-payments.mjs",
+    "test:order-detail": "node scripts/verify-order-detail.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {

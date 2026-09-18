@@ -1,17 +1,9 @@
+import Link from 'next/link';
 import { requireDashboardAccess } from '@/lib/dashboard';
 import prisma from '@/lib/prisma';
 import { formatPrice } from '@/lib/format';
 import OrderStatusActions from '../../_components/orders/OrderStatusActions';
-
-const STATUS_LABELS: Record<string, string> = {
-  payment_pending: 'Awaiting payment',
-  paid: 'Paid',
-  confirmed: 'Confirmed',
-  processing: 'Processing',
-  shipped: 'Shipped',
-  delivered: 'Delivered',
-  cancelled: 'Cancelled',
-};
+import { STATUS_LABELS } from '../../_components/orders/status';
 
 export default async function OrdersPage() {
   const access = await requireDashboardAccess();
@@ -61,10 +53,20 @@ export default async function OrdersPage() {
               {orders.map((order) => (
                 <tr key={order.id} className="hover:bg-[var(--color-muted)]/5">
                   <td className="whitespace-nowrap px-4 py-3 text-[var(--color-text)]">
-                    #{order.orderNumber}
+                    <Link
+                      href={`/sales/orders/${order.id}`}
+                      className="font-medium hover:text-[var(--color-primary)] hover:underline"
+                    >
+                      #{order.orderNumber}
+                    </Link>
                   </td>
                   <td className="px-4 py-3 text-[var(--color-text)]">
-                    <span className="font-medium">{order.customerName}</span>
+                    <Link
+                      href={`/sales/orders/${order.id}`}
+                      className="font-medium hover:text-[var(--color-primary)] hover:underline"
+                    >
+                      {order.customerName}
+                    </Link>
                     <span className="ml-1 text-[var(--color-text-muted)]">{order._count.items} item(s)</span>
                   </td>
                   <td className="px-4 py-3">

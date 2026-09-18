@@ -30,12 +30,16 @@ export const DEFAULT_DELIVERY_METHODS: DeliveryMethod[] = [
 
 export const ORDER_STATUSES = {
   paymentPending: 'payment_pending',
+  paid: 'paid',
   confirmed: 'confirmed',
   processing: 'processing',
   shipped: 'shipped',
   delivered: 'delivered',
   cancelled: 'cancelled',
 } as const;
+
+export const ORDER_PAYMENT_METHODS = ['paystack', 'bank_transfer', 'cash_on_delivery'] as const;
+export type OrderPaymentMethod = (typeof ORDER_PAYMENT_METHODS)[number];
 
 /** Per-business delivery methods from deliveryConfig (falls back to defaults). */
 export function getDeliveryMethods(deliveryConfig: unknown): DeliveryMethod[] {
@@ -81,6 +85,7 @@ export type PlaceOrderInput = {
   deliveryMethodId: string;
   deliveryConfig: unknown;
   deliveryAddress?: DeliveryAddress | null;
+  paymentMethod?: string;
   notes?: string | null;
 };
 
@@ -99,6 +104,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
     deliveryMethodId,
     deliveryConfig,
     deliveryAddress,
+    paymentMethod,
     notes,
   } = input;
 
@@ -243,6 +249,9 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
           userId: userId ?? null,
           orderNumber,
           status: ORDER_STATUSES.paymentPending,
+          paymentMethod: ORDER_PAYMENT_METHODS.includes(paymentMethod as OrderPaymentMethod)
+            ? (paymentMethod as OrderPaymentMethod)
+            : 'bank_transfer',
           customerName: customerName.trim(),
           customerEmail: customerEmail.trim().toLowerCase(),
           customerPhone: customerPhone?.trim() || null,
@@ -318,6 +327,8 @@ export type OrderView = {
   id: string;
   orderNumber: string;
   status: string;
+  paymentMethod: string;
+  paidAt: Date | null;
   customerName: string;
   customerEmail: string;
   customerPhone: string | null;
@@ -363,6 +374,8 @@ export async function getOrderView(businessId: string, orderId: string): Promise
     id: order.id,
     orderNumber: order.orderNumber,
     status: order.status,
+    paymentMethod: order.paymentMethod,
+    paidAt: order.paidAt,
     customerName: order.customerName,
     customerEmail: order.customerEmail,
     customerPhone: order.customerPhone,

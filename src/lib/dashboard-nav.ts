@@ -7,9 +7,9 @@
 // src/lib/tenant.ts). Never treat visibility here as a security boundary.
 //
 // Permission gates reference seeded permissions (src/lib/auth/permissions.ts).
-// Sections that have no seeded permission yet (marketing / payments /
-// subscription) use forward-looking permission names; until those are seeded,
-// Staff never holds them, so those sections are Owner-only.
+// Sections that have no seeded permission yet (marketing / subscription) use
+// forward-looking permission names; until those are seeded, Staff never holds
+// them, so those sections are Owner-only.
 
 export type DashboardNavItem = {
   label: string;
@@ -155,12 +155,6 @@ export const DASHBOARD_NAV: DashboardNavSection[] = [
         label: 'Payment Providers',
         href: '/payments/providers',
         description: 'Connect payment gateways',
-        permission: 'payments.manage',
-      },
-      {
-        label: 'Paystack',
-        href: '/payments/paystack',
-        description: 'Paystack settings',
         permission: 'payments.manage',
       },
       {

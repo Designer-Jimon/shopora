@@ -22,6 +22,12 @@ export const SEED_PERMISSIONS: SeedPermission[] = [
   // ── Transactions ──────────────────────────────────────────────────
   { name: 'transactions.read',  description: 'View transactions',     category: 'transactions' },
 
+  // ── Payments ──────────────────────────────────────────────────────
+  // Note: not granted to Staff in the seed — payment gateway keys are
+  // business-owner-level; the dashboard hides Payments behind the Owner-only
+  // `payments.manage` gate from Phase 4.
+  { name: 'payments.manage',    description: 'Connect and manage payment gateways', category: 'payments' },
+
   // ── Customers ─────────────────────────────────────────────────────
   { name: 'customers.read',   description: 'View customers',          category: 'customers' },
   { name: 'customers.write',  description: 'Edit customer details',   category: 'customers' },

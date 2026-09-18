@@ -1,7 +1,10 @@
 // SHOPORA — /api/store/[slug]/checkout
 //   POST — place an order from the session cart. Public (guests included):
-//   the cart session cookie is the identity. payment_pending order; payment
-//   arrives in Phase 8.
+//   the cart session cookie is the identity. payment_pending order; Phase 8:
+//   when the store connected Paystack and the customer picked paystack we start
+//   a hosted-checkout session and return its authorization_url (server-side,
+//   secret never leaves the API). Other methods land payment_pending and are
+//   marked paid manually by the business.
 
 import { NextRequest } from 'next/server';
 import { jsonOk, jsonError, jsonCreated, authErrors } from '@/lib/http';
@@ -9,6 +12,9 @@ import { getTenantContext } from '@/lib/tenant';
 import { withTenant } from '@/lib/withTenant';
 import { readCartSessionId, resolveCartBusiness } from '@/lib/cart';
 import { placeOrder, type DeliveryAddress } from '@/lib/order';
+import { getConnectedProvider } from '@/lib/payments';
+import { recordPaymentInitiation } from '@/lib/payments/orders';
+import { PAYMENT_METHODS } from '@/lib/payments/types';
 
 export const POST = withTenant(async (request: NextRequest, ctx) => {
   const { slug } = (ctx as { params?: { slug?: string } }).params ?? {};
@@ -37,6 +43,16 @@ export const POST = withTenant(async (request: NextRequest, ctx) => {
 
   const tenant = getTenantContext();
 
+  const validMethods: string[] = [
+    PAYMENT_METHODS.paystack,
+    PAYMENT_METHODS.bankTransfer,
+    PAYMENT_METHODS.cashOnDelivery,
+  ];
+  const paymentMethod =
+    typeof body.paymentMethod === 'string' && validMethods.includes(body.paymentMethod)
+      ? body.paymentMethod
+      : PAYMENT_METHODS.bankTransfer;
+
   const result = await placeOrder({
     businessId: biz.id,
     sessionId,
@@ -47,6 +63,7 @@ export const POST = withTenant(async (request: NextRequest, ctx) => {
     deliveryMethodId: typeof body.deliveryMethod === 'string' ? body.deliveryMethod : '',
     deliveryConfig: biz.deliveryConfig,
     deliveryAddress,
+    paymentMethod,
     notes: typeof body.notes === 'string' && body.notes ? body.notes : null,
   });
 
@@ -57,10 +74,44 @@ export const POST = withTenant(async (request: NextRequest, ctx) => {
     return jsonError(result.error ?? 'Checkout failed', 400);
   }
 
-  return jsonCreated({
+  const base: Record<string, unknown> = {
     orderId: result.orderId,
     orderNumber: result.orderNumber,
     total: result.total,
+    paymentMethod,
     redirectTo: `/${slug}/orders/${result.orderId}`,
-  });
+  };
+
+  // Start a hosted-checkout session when the customer chose Paystack and the
+  // store has it connected. Failure degrades gracefully: the order stays
+  // payment_pending and the user is sent to its page to retry/pay manually.
+  if (paymentMethod === PAYMENT_METHODS.paystack) {
+    const { connected, provider } = await getConnectedProvider(biz.id, PAYMENT_METHODS.paystack);
+    if (connected && provider) {
+      const origin = request.nextUrl.origin;
+      const init = await provider.initializeTransaction({
+        orderId: result.orderId,
+        orderNumber: result.orderNumber,
+        amount: result.total,
+        email: typeof body.email === 'string' ? body.email : '',
+        callbackUrl: `${origin}/api/payments/paystack/return?orderId=${result.orderId}`,
+      });
+      if (init.ok) {
+        await recordPaymentInitiation({
+          businessId: biz.id,
+          orderId: result.orderId,
+          provider: PAYMENT_METHODS.paystack,
+          providerRef: init.providerRef,
+          amount: result.total,
+        });
+        base.authorizationUrl = init.authorizationUrl;
+      } else {
+        base.paymentError = init.error;
+      }
+    } else {
+      base.paymentError = 'Paystack is not connected on this store yet — pay on delivery or transfer instead.';
+    }
+  }
+
+  return jsonCreated(base);
 });

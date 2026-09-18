@@ -1,9 +1,11 @@
 import { requireDashboardAccess } from '@/lib/dashboard';
 import prisma from '@/lib/prisma';
 import { formatPrice } from '@/lib/format';
+import OrderStatusActions from '../../_components/orders/OrderStatusActions';
 
 const STATUS_LABELS: Record<string, string> = {
   payment_pending: 'Awaiting payment',
+  paid: 'Paid',
   confirmed: 'Confirmed',
   processing: 'Processing',
   shipped: 'Shipped',
@@ -52,6 +54,7 @@ export default async function OrdersPage() {
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Total</th>
                 <th className="px-4 py-3 text-right">Date</th>
+                <th className="px-4 py-3 text-right">Update</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--color-border)]">
@@ -80,6 +83,9 @@ export default async function OrdersPage() {
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-right text-[var(--color-text-muted)]">
                     {order.createdAt.toLocaleDateString('en-NG')}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <OrderStatusActions orderId={order.id} status={order.status} />
                   </td>
                 </tr>
               ))}

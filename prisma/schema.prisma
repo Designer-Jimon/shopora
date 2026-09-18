@@ -70,12 +70,14 @@ model Business {
 
   deliveryConfig  Json @default("{}")
 
-  staff      BusinessStaff[]
-  categories Category[]
-  products   Product[]
-  inventory  InventoryTransaction[]
-  carts      Cart[]
-  orders     Order[]
+  staff          BusinessStaff[]
+  categories     Category[]
+  products       Product[]
+  inventory      InventoryTransaction[]
+  carts          Cart[]
+  orders         Order[]
+  paymentProviders PaymentProvider[]
+  transactions   Transaction[]
 
   @@index([slug])
   @@index([isActive])
@@ -309,32 +311,38 @@ model CartItem {
 }
 
 // ---------------------------------------------------------------------------
-// Order — a placed order. status flows: payment_pending → confirmed →
+// Order — a placed order. status flows: payment_pending → paid → confirmed →
 // processing → shipped/delivered → cancelled. Totals are snapshotted.
+// paymentMethod records how the customer chose to pay (paystack | bank_transfer
+// | cash_on_delivery); paidAt is set once payment is received (gateway webhook
+// or manual dashboard confirmation).
 // ---------------------------------------------------------------------------
 model Order {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   businessId      String
   userId          String?
-  orderNumber     String   @default("")
-  status          String   @default("payment_pending")
+  orderNumber     String    @default("")
+  status          String    @default("payment_pending")
+  paymentMethod   String    @default("bank_transfer")
+  paidAt          DateTime?
   customerName    String
   customerEmail   String
   customerPhone   String?
-  deliveryMethod  String   @default("standard")
+  deliveryMethod  String    @default("standard")
   deliveryAddress Json?
-  subtotal        Decimal  @db.Decimal(12, 2)
-  discountTotal   Decimal  @db.Decimal(12, 2) @default(0)
-  deliveryFee     Decimal  @db.Decimal(12, 2) @default(0)
-  total           Decimal  @db.Decimal(12, 2)
+  subtotal        Decimal   @db.Decimal(12, 2)
+  discountTotal   Decimal   @db.Decimal(12, 2) @default(0)
+  deliveryFee     Decimal   @db.Decimal(12, 2) @default(0)
+  total           Decimal   @db.Decimal(12, 2)
   notes           String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  business Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  user     User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
-  items    OrderItem[]
-  history  OrderStatusHistory[]
+  business    Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user        User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  items       OrderItem[]
+  history     OrderStatusHistory[]
+  transactions Transaction[]
 
   @@index([businessId])
   @@index([userId])
@@ -378,6 +386,75 @@ model OrderStatusHistory {
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId])
+}
+
+// ---------------------------------------------------------------------------
+// PaymentProvider — a gateway connection a business owns (per-business account,
+// e.g. Paystack). status: connected | disconnected. publicKey is safe to show;
+// the SECRET KEY is NEVER stored here — it lives encrypted in the
+// PaymentProviderSecret table and is only ever decrypted server-side.
+// provider: 'paystack' (Flutterwave arrives in a later phase).
+// ---------------------------------------------------------------------------
+model PaymentProvider {
+  id          String    @id @default(cuid())
+  businessId  String
+  provider    String
+  publicKey   String?
+  status      String    @default("disconnected")
+  connectedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  business Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  secret   PaymentProviderSecret?
+
+  @@unique([businessId, provider])
+  @@index([businessId])
+}
+
+// ---------------------------------------------------------------------------
+// PaymentProviderSecret — encrypted-at-rest secret key for a PaymentProvider.
+// AES-256-GCM with a master key from the KEY_ENCRYPTION_SECRET env var (see
+// src/lib/payments/secret.ts). Write-only from the dashboard's perspective:
+// nothing in the app ever decrypts and returns this value to a client.
+// ---------------------------------------------------------------------------
+model PaymentProviderSecret {
+  id         String   @id @default(cuid())
+  providerId String   @unique
+  encrypted  String
+  keyVersion String   @default("v1")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  provider PaymentProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Transaction — a payment lifecycle record. One row per gateway attempt,
+// anchored by (provider, providerRef) so replayed webhooks can't double-process.
+// status: initiated → success | failed | pending. providerRef is the gateway
+// reference (Paystack `reference`); manual confirmations use provider 'manual'
+// and a NULL providerRef.
+// ---------------------------------------------------------------------------
+model Transaction {
+  id          String    @id @default(cuid())
+  businessId  String
+  orderId     String?
+  provider    String
+  providerRef String?
+  amount      Decimal   @db.Decimal(12, 2)
+  status      String    @default("initiated")
+  type        String    @default("payment")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  order    Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerRef])
+  @@index([businessId])
+  @@index([orderId])
+  @@index([providerRef])
 }
 
 // ---------------------------------------------------------------------------

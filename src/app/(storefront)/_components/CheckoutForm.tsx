@@ -11,6 +11,7 @@ type Props = {
   slug: string;
   cart: CartView;
   deliveryMethods: DeliveryMethod[];
+  paystackEnabled: boolean;
 };
 
 const STEPS = ['Contact', 'Delivery', 'Method', 'Review'] as const;
@@ -25,10 +26,17 @@ type FormState = {
   address: string;
   landmark: string;
   method: string;
+  paymentMethod: string;
   notes: string;
 };
 
-export default function CheckoutForm({ slug, cart, deliveryMethods }: Props) {
+const PAYMENT_OPTIONS = [
+  { id: 'paystack', label: 'Pay online', hint: 'Card, bank transfer or USSD via Paystack' },
+  { id: 'bank_transfer', label: 'Bank transfer', hint: 'You pay later, the store confirms manually' },
+  { id: 'cash_on_delivery', label: 'Cash on delivery', hint: 'Pay cash when your order arrives' },
+] as const;
+
+export default function CheckoutForm({ slug, cart, deliveryMethods, paystackEnabled }: Props) {
   const router = useRouter();
   const [stepIdx, setStepIdx] = useState<number>(0);
   const [form, setForm] = useState<FormState>({
@@ -40,6 +48,7 @@ export default function CheckoutForm({ slug, cart, deliveryMethods }: Props) {
     address: '',
     landmark: '',
     method: deliveryMethods[0]?.id ?? 'pickup',
+    paymentMethod: paystackEnabled ? 'paystack' : 'bank_transfer',
     notes: '',
   });
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -100,6 +109,7 @@ export default function CheckoutForm({ slug, cart, deliveryMethods }: Props) {
           email: form.email,
           phone: form.phone || null,
           deliveryMethod: form.method,
+          paymentMethod: form.paymentMethod,
           deliveryAddress: isPickup
             ? null
             : { state: form.state, city: form.city, address: form.address, landmark: form.landmark || null },
@@ -114,6 +124,13 @@ export default function CheckoutForm({ slug, cart, deliveryMethods }: Props) {
       }
       // Clear the (server) cart badge cache before navigating.
       router.refresh();
+      if (typeof data.authorizationUrl === 'string' && data.authorizationUrl) {
+        // Hosted Paystack checkout — the payment page is the next step; the
+        // portal bounces back to /api/payments/paystack/return?orderId=… and
+        // that ends on the order page.
+        window.location.href = data.authorizationUrl;
+        return;
+      }
       router.push(data.redirectTo);
     } catch {
       setSubmitError('Network error. Please check your connection and try again.');
@@ -341,6 +358,41 @@ export default function CheckoutForm({ slug, cart, deliveryMethods }: Props) {
                   )}
                 </div>
               </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">Payment</p>
+                <div className="mt-2 space-y-2">
+                  {PAYMENT_OPTIONS.filter((o) => o.id !== 'paystack' || paystackEnabled).map((o) => {
+                    const active = form.paymentMethod === o.id;
+                    return (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => set('paymentMethod', o.id)}
+                        className="flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition"
+                        style={{
+                          borderColor: active ? 'var(--sf-primary)' : 'var(--sf-border)',
+                          background: active ? 'var(--sf-tint)' : 'var(--sf-bg)',
+                        }}
+                      >
+                        <span
+                          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
+                          style={{
+                            borderColor: active ? 'var(--sf-primary)' : 'var(--sf-muted)',
+                            background: active ? 'var(--sf-primary)' : 'transparent',
+                          }}
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold" style={{ color: 'var(--sf-text)' }}>
+                            {o.label}
+                          </span>
+                          <span className="block text-xs text-[var(--sf-muted)]">{o.hint}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -414,8 +466,11 @@ export default function CheckoutForm({ slug, cart, deliveryMethods }: Props) {
           </div>
         </dl>
         <p className="mt-4 text-xs text-[var(--sf-muted)]">
-          Payment is not processed yet — you&apos;ll settle on delivery. Payment &amp;
-          gateways arrive in a later phase.
+          {form.paymentMethod === 'paystack'
+            ? 'You\u2019ll be taken to a secure checkout page to complete payment.'
+            : form.paymentMethod === 'cash_on_delivery'
+              ? 'Pay cash when your order arrives.'
+              : 'Transfer details will be shown on your order summary.'}
         </p>
         <Link
           href={`/${slug}/cart`}

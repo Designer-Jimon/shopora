@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 
 const STATUS_LABELS: Record<string, string> = {
   payment_pending: 'Awaiting payment',
+  paid: 'Paid',
   confirmed: 'Confirmed',
   processing: 'Processing',
   shipped: 'Shipped',
@@ -15,16 +16,32 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  paystack: 'Pay online (Paystack)',
+  bank_transfer: 'Bank transfer',
+  cash_on_delivery: 'Cash on delivery',
+};
+
+type PaymentOutcome = 'paid' | 'failed' | 'pending' | 'unavailable' | null;
+
 export default async function OrderConfirmationPage({
   params,
+  searchParams,
 }: {
   params: { slug: string; orderId: string };
+  searchParams?: { payment?: string };
 }) {
   const biz = await getStorefrontBusiness(params.slug);
   if (!biz) notFound();
 
   const order = await getOrderView(biz.id, params.orderId);
   if (!order) notFound();
+
+  const outcome = searchParams?.payment as PaymentOutcome;
+
+  const isPaid = order.paidAt !== null || order.status === 'paid' || order.status === 'delivered';
+  const paymentState =
+    order.status === 'cancelled' ? 'CANCELLED' : isPaid ? 'PAID' : order.status === 'payment_pending' ? 'AWAITING_PAYMENT' : 'SETTLED_LATER';
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
@@ -47,15 +64,31 @@ export default async function OrderConfirmationPage({
           </p>
         </div>
 
+        {outcome && (
+          <div
+            className="mt-6 rounded-md px-4 py-3 text-sm"
+            style={{
+              background: outcome === 'paid' ? '#d1fae5' : '#fef3c7',
+              color: outcome === 'paid' ? '#065f46' : '#92400e',
+            }}
+          >
+            {outcome === 'paid' && 'Payment confirmed — thank you!'}
+            {outcome === 'failed' && 'Your payment did not go through. Please contact the store or try again.'}
+            {outcome === 'pending' && 'Your payment is still being processed. We will update you on your order.'}
+            {outcome === 'unavailable' && 'Online payment could not be completed. The store will contact you about payment.'}
+          </div>
+        )}
+
         <div className="mt-6 rounded-md p-4" style={{ background: 'var(--sf-tint)' }}>
           <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">Status</p>
           <p className="mt-1 text-sm font-semibold" style={{ color: 'var(--sf-text)' }}>
             {STATUS_LABELS[order.status] ?? order.status}
           </p>
           <p className="mt-1 text-xs text-[var(--sf-muted)]">
-            {order.status === 'payment_pending'
-              ? 'Payment is not yet processed — you will settle when your order is ready (pickup) or delivered.'
-              : 'Payment received.'}
+            {paymentState === 'PAID' && `Payment received${order.paidAt ? ` on ${order.paidAt.toLocaleDateString('en-NG')}` : ''}${order.paymentMethod ? ` via ${PAYMENT_METHOD_LABELS[order.paymentMethod] ?? order.paymentMethod}` : ''}.`}
+            {paymentState === 'AWAITING_PAYMENT' && 'Your payment method was not selected or is awaiting confirmation.'}
+            {paymentState === 'SETTLED_LATER' && 'Payment will be settled as arranged with the store.'}
+            {paymentState === 'CANCELLED' && 'This order was cancelled.'}
           </p>
         </div>
 
@@ -101,10 +134,13 @@ export default async function OrderConfirmationPage({
 
         <div className="mt-6 grid gap-4 text-sm sm:grid-cols-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">Contact</p>
-            <p className="mt-1" style={{ color: 'var(--sf-text)' }}>{order.customerName}</p>
-            <p className="text-[var(--sf-muted)]">{order.customerEmail}</p>
-            {order.customerPhone && <p className="text-[var(--sf-muted)]">{order.customerPhone}</p>}
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">Payment</p>
+            <p className="mt-1" style={{ color: 'var(--sf-text)' }}>
+              {PAYMENT_METHOD_LABELS[order.paymentMethod] ?? order.paymentMethod}
+            </p>
+            {order.paidAt && (
+              <p className="text-[var(--sf-muted)]">Paid {order.paidAt.toLocaleString('en-NG')}</p>
+            )}
           </div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">Delivery</p>

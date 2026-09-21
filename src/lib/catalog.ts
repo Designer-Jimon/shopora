@@ -4,6 +4,8 @@
 
 import prisma from '@/lib/prisma';
 import type { Prisma } from '@prisma/client';
+import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
+import { getSubscriptionState } from '@/lib/subscriptions/state';
 
 // ------------------------------------------------------------------
 // Serialization helpers
@@ -372,14 +374,18 @@ export async function adjustInventory(input: InventoryAdjustInput) {
 }
 
 // ------------------------------------------------------------------
-// Subscription product limit stub (Phase 9 TODO)
+// Subscription product limit (Phase 9) — the cap comes from the business's
+// active plan, not a hardcoded number.
 // ------------------------------------------------------------------
 
-// TODO(Phase 9): replace with SubscriptionPlan.product_limit from DB.
-// This hardcoded limit keeps the API functional until billing lands.
+// Emergency fallback when a subscription row is missing (shouldn't happen —
+// getSubscriptionState provisions one lazily).
 const FALLBACK_PRODUCT_LIMIT = parseInt(process.env.SUBSCRIPTION_PRODUCT_LIMIT ?? '50', 10);
 
 export async function canCreateProduct(businessId: string): Promise<{ allowed: boolean; limit: number; current: number }> {
   const current = await prisma.product.count({ where: { businessId } });
-  return { allowed: current < FALLBACK_PRODUCT_LIMIT, limit: FALLBACK_PRODUCT_LIMIT, current };
+  const state = await getSubscriptionState(businessId).catch(() => null);
+  if (!state) return { allowed: current < FALLBACK_PRODUCT_LIMIT, limit: FALLBACK_PRODUCT_LIMIT, current };
+  const limit = state.status === SUBSCRIPTION_STATUSES.cancelled ? 0 : state.productLimit;
+  return { allowed: current < limit, limit, current };
 }

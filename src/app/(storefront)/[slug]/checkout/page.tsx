@@ -7,6 +7,8 @@ import { getDeliveryMethods } from '@/lib/order';
 import prisma from '@/lib/prisma';
 import { isPaymentGatewayConnected } from '@/lib/payments';
 import { PAYMENT_METHODS } from '@/lib/payments/types';
+import { getSubscriptionState } from '@/lib/subscriptions/state';
+import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
 import CheckoutForm from '../../_components/CheckoutForm';
 
 export const dynamic = 'force-dynamic';
@@ -36,7 +38,10 @@ export default async function StorefrontCheckoutPage({
     redirect(`/${biz.slug}/cart`);
   }
 
+  const sub = await getSubscriptionState(biz.id);
   const paystackEnabled = await isPaymentGatewayConnected(biz.id);
+
+  const checkoutBlocked = sub.status === SUBSCRIPTION_STATUSES.suspended || sub.status === SUBSCRIPTION_STATUSES.cancelled;
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
@@ -52,14 +57,28 @@ export default async function StorefrontCheckoutPage({
         Checkout
       </h1>
 
-      <div className="mt-6">
-        <CheckoutForm
-          slug={biz.slug}
-          cart={cart}
-          deliveryMethods={deliveryMethods}
-          paystackEnabled={paystackEnabled}
-        />
-      </div>
+      {checkoutBlocked ? (
+        <div
+          className="mt-6 rounded-lg border p-6 text-center"
+          style={{ borderColor: 'var(--sf-border)', background: 'var(--sf-tint)' }}
+        >
+          <p className="text-sm font-semibold" style={{ color: 'var(--sf-text)' }}>
+            This store is not accepting orders right now.
+          </p>
+          <p className="mt-2 text-sm text-[var(--sf-muted)]">
+            The store owner has paused checkout. Please check back soon.
+          </p>
+        </div>
+      ) : (
+        <div className="mt-6">
+          <CheckoutForm
+            slug={biz.slug}
+            cart={cart}
+            deliveryMethods={deliveryMethods}
+            paystackEnabled={paystackEnabled}
+          />
+        </div>
+      )}
     </div>
   );
 }

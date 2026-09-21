@@ -40,7 +40,7 @@ async function main() {
   ok('Owner role seeded', !!ownerRole);
   ok('Staff role seeded', !!staffRole);
   const ownerPermCount = await prisma.rolePermission.count({ where: { roleId: ownerRole.id } });
-  ok(`Owner has ${ownerPermCount} permissions (expect 11)`, ownerPermCount === 11);
+  ok(`Owner has ${ownerPermCount} permissions (expect 13)`, ownerPermCount === 13);
 
   // 3. Register business owner (transaction)
   console.log('\n3. Register business owner');

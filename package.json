@@ -13,6 +13,8 @@
     "db:generate": "prisma generate",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed-plans": "tsx prisma/seed-plans.ts",
+    "db:seed-admin": "tsx prisma/seed-admin.ts",
     "db:clean-test": "node scripts/clean-test-data.cjs",
     "test:core": "tsx scripts/verify-phase2.ts",
     "test:api": "node scripts/verify-http.mjs",
@@ -22,6 +24,8 @@
     "test:storefront": "node scripts/verify-storefront.mjs",
     "test:checkout": "node scripts/verify-checkout.mjs",
     "test:payments": "node scripts/verify-payments.mjs",
+    "test:subscription": "node scripts/verify-subscription.mjs",
+    "test:admin": "node scripts/verify-admin.mjs",
     "test:order-detail": "node scripts/verify-order-detail.mjs",
     "postinstall": "prisma generate"
   },

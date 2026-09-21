@@ -15,6 +15,8 @@ import { placeOrder, type DeliveryAddress } from '@/lib/order';
 import { getConnectedProvider } from '@/lib/payments';
 import { recordPaymentInitiation } from '@/lib/payments/orders';
 import { PAYMENT_METHODS } from '@/lib/payments/types';
+import { getSubscriptionState, isCheckoutAllowed } from '@/lib/subscriptions/state';
+import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
 
 export const POST = withTenant(async (request: NextRequest, ctx) => {
   const { slug } = (ctx as { params?: { slug?: string } }).params ?? {};
@@ -22,6 +24,10 @@ export const POST = withTenant(async (request: NextRequest, ctx) => {
 
   const biz = await resolveCartBusiness(slug);
   if (!biz) return authErrors.notFound('Store not found');
+
+  const sub = await getSubscriptionState(biz.id);
+  if (sub.status === SUBSCRIPTION_STATUSES.cancelled) return authErrors.notFound('Store not found');
+  if (!isCheckoutAllowed(sub.status)) return jsonError('This store is temporarily unable to take orders — please try again later.', 423);
 
   const sessionId = readCartSessionId(request);
   if (!sessionId) return authErrors.badRequest('Your cart is empty');

@@ -9,6 +9,7 @@ import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { DashboardNavSection } from '@/lib/dashboard-nav';
+import { EndImpersonationButton, LogoutButton } from '@/app/admin/_components/actions';
 
 type DashboardNavProps = {
   nav: DashboardNavSection[];
@@ -17,6 +18,8 @@ type DashboardNavProps = {
   businessRole: string;
   displayName: string;
   userInitials: string;
+  /** Present only during a Phase 10 platform impersonation session. */
+  impersonation?: { businessName: string };
   children: ReactNode;
 };
 
@@ -121,6 +124,7 @@ function SidebarContent({
         >
           View store ↗
         </Link>
+        <LogoutButton className="mb-3 block rounded-md border border-[var(--color-border)] px-3 py-2 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]" />
         <div className="flex items-center gap-3 px-1">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-bold text-white">
             {userInitials}
@@ -142,12 +146,25 @@ export default function DashboardNav({
   businessRole,
   displayName,
   userInitials,
+  impersonation,
   children,
 }: DashboardNavProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[var(--color-background)] lg:flex">
+    <div className="min-h-screen bg-[var(--color-background)]">
+      {impersonation && (
+        <div className="sticky top-0 z-40 bg-red-600 py-1.5 text-center text-white">
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 text-xs font-semibold">
+            <span>
+              You are impersonating <b>{impersonation.businessName}</b> — changes made here affect their live store.
+              Your identity is being logged.
+            </span>
+            <EndImpersonationButton />
+          </div>
+        </div>
+      )}
+      <div className="min-h-screen lg:flex">
       {/* Mobile drawer */}
       {drawerOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -226,6 +243,7 @@ export default function DashboardNav({
         </header>
 
         <main className="flex-1 px-4 py-6 sm:px-6 md:py-8">{children}</main>
+        </div>
       </div>
     </div>
   );

@@ -7,6 +7,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { type NextRequest } from 'next/server';
 import { type PlatformRole } from '@/lib/auth/jwt';
 import { resolveSession, type SessionResult } from '@/lib/auth/session';
+import { readImpersonationFromRequest } from '@/lib/impersonation';
+import { resolveBusinessOwnerAccess } from '@/lib/businessAccess';
 
 // ------------------------------------------------------------------
 // Context type
@@ -19,6 +21,11 @@ export type TenantContext = {
   businessId?: string;
   businessRole?: string;
   permissions: string[];
+  /** platform.admin (Phase 10) — set when the session is platform staff. */
+  platformStaffId?: string;
+  platformRoleName?: string;
+  /** The platform admin's userId when this business context is an impersonated session. */
+  impersonatedBy?: string;
 };
 
 // ------------------------------------------------------------------
@@ -44,6 +51,26 @@ export async function resolveTenantFromRequest(
     return { authenticated: false, permissions: [] };
   }
 
+  // Phase 10 impersonation: an authenticated platform admin holding a valid
+  // impersonation cookie sees API routes as the target business's Owner.
+  // The token is stateless (exp auto-expires) and its `exp` is re-verified
+  // here on every request.
+  const impersonation = await readImpersonationFromRequest(request);
+  const impersonatedContext = impersonation
+    ? await resolveBusinessOwnerAccess(impersonation.businessId)
+    : null;
+  if (impersonation && impersonatedContext) {
+    return {
+      authenticated: true,
+      userId: session.userId,
+      role: 'business_user',
+      businessId: impersonation.businessId,
+      businessRole: impersonatedContext.roleName,
+      permissions: impersonatedContext.permissions,
+      impersonatedBy: impersonation.adminUserId,
+    };
+  }
+
   return {
     authenticated: true,
     userId: session.userId,
@@ -51,6 +78,8 @@ export async function resolveTenantFromRequest(
     businessId: session.businessId,
     businessRole: session.businessRole,
     permissions: session.permissions,
+    platformStaffId: session.platformStaffId,
+    platformRoleName: session.platformRoleName,
   };
 }
 

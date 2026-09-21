@@ -33,6 +33,14 @@ model User {
   carts      Cart[]
   orders     Order[]
 
+  // Phase 10 platform membership + audit trails
+  platformStaff       PlatformStaff[]
+  auditLogs           AuditLog[]
+  supportTickets      SupportTicket[]
+  assignedTickets     SupportTicket[]  @relation("TicketAssignee")
+  coupons             Coupon[]
+  platformSettingEdits PlatformSetting[]
+
   @@index([email])
   @@index([phone])
 }
@@ -78,6 +86,9 @@ model Business {
   orders         Order[]
   paymentProviders PaymentProvider[]
   transactions   Transaction[]
+  subscription   Subscription?
+  auditLogs      AuditLog[]
+  supportTickets SupportTicket[]
 
   @@index([slug])
   @@index([isActive])
@@ -119,6 +130,7 @@ model Role {
   updatedAt   DateTime @updatedAt
 
   staff       BusinessStaff[]
+  platformStaff PlatformStaff[]
   permissions RolePermission[]
 
   @@index([name])
@@ -189,9 +201,9 @@ model Category {
 // products WITHOUT variants; products WITH variants track stock per-variant
 // (their effective stock is the sum of variant stock).
 //
-// ⚠️ SUBSCRIPTION LIMIT: product_limit is enforced server-side on create,
-// stubbed via SUBSCRIPTION_PRODUCT_LIMIT (default 50). Replace with the real
-// Subscription/SubscriptionPlan tables in Phase 9. See POST /api/products.
+// ⚠️ SUBSCRIPTION LIMIT: product_limit is enforced server-side on create
+// against the business's plan (SubscriptionPlan.productLimit). See POST
+// /api/products and src/lib/subscriptions/*.
 // ---------------------------------------------------------------------------
 model Product {
   id             String   @id @default(cuid())
@@ -479,4 +491,195 @@ model InventoryTransaction {
   @@index([businessId])
   @@index([productId])
   @@index([variantId])
+}
+
+// ---------------------------------------------------------------------------
+// SubscriptionPlan — the tier catalogue (Phase 9). Seeded by db:seed-plans.
+// productLimit/staffLimit gate create/invite; customDomain + analyticsTier flip
+// features in later phases. Prices are the store's billable NGN amounts.
+// ---------------------------------------------------------------------------
+model SubscriptionPlan {
+  id                 String   @id @default(cuid())
+  name               String   @unique // 'starter' | 'business' | 'premium'
+  displayName        String
+  description        String?
+  monthlyPriceNaira  Decimal  @db.Decimal(12, 2)
+  annualPriceNaira   Decimal  @db.Decimal(12, 2)
+  productLimit       Int      @default(50)
+  staffLimit         Int      @default(2)
+  customDomain       Boolean  @default(false)
+  analyticsTier      String   @default("basic") // basic | advanced
+  isActive           Boolean  @default(true)
+  sortOrder          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@index([isActive])
+}
+
+// ---------------------------------------------------------------------------
+// Subscription — a business's live plan + billing state (Phase 9).
+//   trial     → free Starter trial (14d). expires into past_due.
+//   active    → paid. expires (period end) into past_due.
+//   past_due  → grace (7d). store stays live; checkout allowed. → suspended.
+//   suspended → checkout blocked; storefront stays viewable. → cancelled.
+//   cancelled → storefront 404; dashboard read-only except Subscription page.
+// currentPeriodEnd doubles as the rolling deadline for the CURRENT status
+// (trial end, paid period end, grace end, or suspension end).
+// ---------------------------------------------------------------------------
+model Subscription {
+  id                       String   @id @default(cuid())
+  businessId               String   @unique
+  planId                   String
+  billingCycle             String   @default("monthly") // monthly | annual
+  status                   String   @default("trial")   // trial|active|past_due|suspended|cancelled
+  trialEndsAt              DateTime?
+  currentPeriodEnd         DateTime
+  cancelledAt              DateTime?
+  paystackCustomerCode     String?
+  paystackAuthorizationCode String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  plan     SubscriptionPlan @relation(fields: [planId], references: [id])
+  history  SubscriptionHistory[]
+
+  @@index([status])
+  @@index([planId])
+}
+
+// ---------------------------------------------------------------------------
+// SubscriptionHistory — immutable audit trail for every plan/status change.
+// ---------------------------------------------------------------------------
+model SubscriptionHistory {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  fromStatus     String?
+  toStatus       String
+  note           String?
+  changedAt      DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+}
+
+// ---------------------------------------------------------------------------
+// PlatformStaff — GLOBAL platform-admin membership (Phase 10). Reuses the
+// global Role/Permission tables from Phase 2 — a platform admin is a User with
+// an active row here pointing at a platform role (e.g. 'Platform Super Admin'
+// or 'Platform Admin'). This is what gates the /admin route group; there is no
+// self-registration path for it (bootstrap via prisma/seed-admin.ts).
+// ---------------------------------------------------------------------------
+model PlatformStaff {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// AuditLog — immutable platform audit trail (Phase 10). Written for every
+// privileged action (impersonation start/end, business suspend/reactivate,
+// plan changes, admin account changes). actorUserId is null for system/
+// webhook-driven events; businessId ties an entry to a tenant when relevant.
+// This MUST exist before impersonation ships — every impersonation start/end
+// writes a row here.
+// ---------------------------------------------------------------------------
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorUserId  String?
+  businessId   String?
+  action       String   // e.g. 'impersonate.start' | 'business.suspend' | 'plan.update'
+  target       String?  // human-meaningful subject: business slug, plan name, admin email
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  actor    User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  business Business? @relation(fields: [businessId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// SupportTicket — platform support inbox (Phase 10). Minimal: a reporter
+// (business or user, both optional — guests can file), subject/body, workflow
+// state, and an optional platform-staff assignee.
+// ---------------------------------------------------------------------------
+model SupportTicket {
+  id             String   @id @default(cuid())
+  businessId     String?
+  userId         String?
+  subject        String
+  body           String
+  status         String   @default("open")      // open | in_progress | resolved | closed
+  priority       String   @default("normal")    // low | normal | high | urgent
+  assigneeUserId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  business Business?   @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  user     User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  assignee User?       @relation("TicketAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([priority])
+  @@index([businessId])
+}
+
+// ---------------------------------------------------------------------------
+// Coupon — platform-wide discount codes (Phase 10). kind percentage|fixed;
+// value is the % (e.g. 10 = 10%) or fixed naira. Optional min-order floor,
+// usage cap, and validity window.
+// ---------------------------------------------------------------------------
+model Coupon {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  kind           String   @default("percentage") // percentage | fixed
+  value          Decimal  @db.Decimal(12, 2)
+  minOrderAmount Decimal? @db.Decimal(12, 2)
+  maxUses        Int?
+  usedCount      Int      @default(0)
+  startsAt       DateTime?
+  expiresAt      DateTime?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  createdById    String?
+
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([code])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// PlatformSetting — platform-wide key/value config (Phase 10). value is JSON
+// (scalars, flags, nested config). Editable only via the /admin settings page.
+// ---------------------------------------------------------------------------
+model PlatformSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  description String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([key])
 }

@@ -6,6 +6,8 @@ import { notFound } from 'next/navigation';
 import { getStorefrontBusiness } from '@/lib/storefront';
 import { getCartCount } from '@/lib/cart';
 import { themeCssVars } from '@/lib/theme';
+import { getSubscriptionState } from '@/lib/subscriptions/state';
+import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,6 +42,17 @@ export default async function StorefrontLayout({
 }) {
   const biz = await getStorefrontBusiness(params.slug);
   if (!biz) notFound();
+
+  // Phase 9 — storefront-side subscription enforcement (homepage/products/cart/
+  // checkout share this layout). A cancelled store is taken OFFLINE entirely;
+  // suspended/past_due stores stay up (checkout is blocked at the API). The
+  // on-demand status-flywheel also runs here so a lapse flips without the
+  // owner logging into the dashboard. TTL-cached (30s) — a busy storefront
+  // does NOT hit the DB on every pageview.
+  const subscriptionState = await getSubscriptionState(biz.id);
+  if (subscriptionState.status === SUBSCRIPTION_STATUSES.cancelled) {
+    notFound();
+  }
 
   const sessionId = (await cookies()).get('shopora_cart_session')?.value;
   const cartCount = sessionId ? await getCartCount(biz.id, sessionId) : 0;

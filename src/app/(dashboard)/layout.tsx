@@ -29,6 +29,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       businessRole={access.businessRole}
       displayName={displayName}
       userInitials={userInitials}
+      impersonation={access.impersonatedBy ? { businessName: access.businessName } : undefined}
     >
       {children}
     </DashboardNav>

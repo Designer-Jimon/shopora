@@ -19,6 +19,8 @@ import {
   updateCartItemQuantity,
   MAX_LINE_QUANTITY,
 } from '@/lib/cart';
+import { getSubscriptionState } from '@/lib/subscriptions/state';
+import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
 
 export const GET = withTenant(async (request: NextRequest, ctx) => {
   const { slug } = (ctx as { params?: { slug?: string } }).params ?? {};
@@ -44,6 +46,9 @@ export const POST = withTenant(async (request: NextRequest, ctx) => {
 
   const biz = await resolveCartBusiness(slug);
   if (!biz) return authErrors.notFound('Store not found');
+
+  const sub = await getSubscriptionState(biz.id);
+  if (sub.status === SUBSCRIPTION_STATUSES.cancelled) return authErrors.notFound('Store not found');
 
   let body: Record<string, unknown>;
   try { body = await request.json(); }
@@ -85,6 +90,9 @@ export const PATCH = withTenant(async (request: NextRequest, ctx) => {
 
   const biz = await resolveCartBusiness(slug);
   if (!biz) return authErrors.notFound('Store not found');
+
+  const sub = await getSubscriptionState(biz.id);
+  if (sub.status === SUBSCRIPTION_STATUSES.cancelled) return authErrors.notFound('Store not found');
 
   const sessionId = readCartSessionId(request);
   if (!sessionId) return authErrors.badRequest('No cart session');

@@ -1,8 +1,10 @@
 // SHOPORA — POST /api/auth/login
 // Validates credentials, issues access + refresh tokens in HttpOnly cookies.
-// For business users: finds the first active BusinessStaff row and uses that
-// businessId. If the user belongs to multiple businesses, the first active
-// membership is used (multi-business switching arrives later).
+// Redirect priority is platform > business: an active PlatformStaff membership
+// yields role `platform_admin` (the client routes to /admin). Otherwise, for
+// business users, the first active BusinessStaff row supplies that businessId.
+// If the user belongs to multiple businesses, the first active membership is
+// used (multi-business switching arrives later).
 
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
@@ -36,26 +38,47 @@ export async function POST(request: NextRequest) {
     return authErrors.badRequest('Invalid email or password');
   }
 
-  // ── Resolve business membership ───────────────────────────────────
-  const staffMembership = await prisma.businessStaff.findFirst({
+  // ── Resolve role membership (redirect priority: platform > business) ─────
+  // An active PlatformStaff row is resolved FIRST and makes this a platform
+  // session (role: platform_admin, no businessId claim). The business branch
+  // only applies to users with NO platform membership, so a Super Admin who
+  // also owns a business still lands on /admin after login.
+  const platformMembership = await prisma.platformStaff.findFirst({
     where: { userId: user.id, isActive: true },
     include: {
       role: {
         include: { permissions: { include: { permission: true } } },
       },
     },
-    orderBy: { createdAt: 'asc' },
   });
 
-  const platformRole: PlatformRole = staffMembership ? 'business_user' : 'customer';
+  const staffMembership = platformMembership
+    ? null
+    : await prisma.businessStaff.findFirst({
+        where: { userId: user.id, isActive: true },
+        include: {
+          role: {
+            include: { permissions: { include: { permission: true } } },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+
+  const platformRole: PlatformRole = platformMembership
+    ? 'platform_admin'
+    : staffMembership
+      ? 'business_user'
+      : 'customer';
 
   const { accessToken, refreshToken } = await issueTokenPair(user.id, {
     role: platformRole,
     businessId: staffMembership?.businessId,
     businessRole: staffMembership?.role.name,
-    permissions: staffMembership
-      ? staffMembership.role.permissions.map((rp) => rp.permission.name)
-      : [],
+    permissions: platformMembership
+      ? platformMembership.role.permissions.map((rp) => rp.permission.name)
+      : staffMembership
+        ? staffMembership.role.permissions.map((rp) => rp.permission.name)
+        : [],
   });
 
   // ── Update lastLoginAt ────────────────────────────────────────────
@@ -74,6 +97,7 @@ export async function POST(request: NextRequest) {
       firstName: user.firstName,
       lastName: user.lastName,
     },
+    role: platformRole,
     businessId: staffMembership?.businessId ?? null,
     businessRole: staffMembership?.role.name ?? null,
   });

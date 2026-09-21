@@ -2,13 +2,16 @@ import type { ReactNode } from 'react';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { verifyAccessToken } from '@/lib/auth/jwt';
+import prisma from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Auth route-group shell (login / register).
  *
- * Guard: an already-authenticated visitor is sent to /dashboard (the dashboard
+ * Guard: an already-authenticated visitor is sent away. Redirect priority is
+ * platform > business/customer — an active PlatformStaff membership (Super
+ * Admin) goes to /admin; everyone else goes to /dashboard (the dashboard
  * layout re-routes mid-onboarding owners to /setup and customers back home).
  * Unauthenticated visitors see the auth card in a plain white shell.
  */
@@ -19,7 +22,13 @@ export default async function AuthLayout({ children }: { children: ReactNode }) 
     const secret = process.env.JWT_ACCESS_SECRET;
     if (secret) {
       const claims = await verifyAccessToken(token, secret).catch(() => null);
-      if (claims?.sub) redirect('/dashboard');
+      if (claims?.sub) {
+        const isPlatformAdmin = await prisma.platformStaff.findFirst({
+          where: { userId: claims.sub, isActive: true },
+          select: { id: true },
+        });
+        redirect(isPlatformAdmin ? '/admin' : '/dashboard');
+      }
     }
   }
 

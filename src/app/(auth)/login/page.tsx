@@ -27,9 +27,14 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
-      // Business members go to the onboarding guard (completed → /dashboard,
-      // mid-onboarding → the next wizard step). Customers go home.
-      router.push(data?.businessId ? '/setup' : '/');
+      // Redirect priority: a platform admin goes straight to /admin (even if
+      // they also own a business — the login API resolves platform membership
+      // first). Business members go to the onboarding guard (completed →
+      // /dashboard, mid-onboarding → the next wizard step). Customers go home.
+      router.push(
+        data?.role === 'platform_admin' ? '/admin' :
+        data?.businessId ? '/setup' : '/',
+      );
       router.refresh();
     } catch {
       setError('Network error. Please try again.');

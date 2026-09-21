@@ -98,6 +98,9 @@ export type SessionResult = {
   businessId?: string;
   businessRole?: string;
   permissions: string[];
+  /** platform.admin — present when role = platform_admin (Phase 10). */
+  platformStaffId?: string;
+  platformRoleName?: string;
 } | {
   authenticated: false;
 };
@@ -124,6 +127,33 @@ export async function resolveSession(
 
   const user = await db.user.findUnique({ where: { id: claims.sub } });
   if (!user || !user.isActive) return { authenticated: false };
+
+  // ── Redirect priority (Phase 10): platform membership > business ─────────
+  // GLOBAL platform membership is resolved from the DB row (source of truth,
+  // not the JWT claim), so roles/permissions revoke near-instantly. An active
+  // PlatformStaff row makes this a PLATFORM session, even for a user who also
+  // owns or staffs a business — a Super Admin lands in /admin, never silently
+  // in a business dashboard. The business branch below is only reached when the
+  // user has NO platform membership.
+  const platform = await db.platformStaff.findFirst({
+    where: { userId: user.id, isActive: true },
+    include: {
+      role: {
+        include: { permissions: { include: { permission: true } } },
+      },
+    },
+  });
+
+  if (platform) {
+    return {
+      authenticated: true,
+      userId: user.id,
+      role: 'platform_admin',
+      platformStaffId: platform.id,
+      platformRoleName: platform.role.name,
+      permissions: platform.role.permissions.map((rp) => rp.permission.name),
+    };
+  }
 
   if (claims.role === 'business_user' && claims.businessId) {
     const staff = await db.businessStaff.findFirst({

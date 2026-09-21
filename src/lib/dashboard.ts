@@ -7,6 +7,11 @@ import { redirect } from 'next/navigation';
 import { verifyAccessToken } from '@/lib/auth/jwt';
 import prisma from '@/lib/prisma';
 import { isOnboardingComplete } from '@/lib/business';
+import {
+  readImpersonationFromCookies,
+  type ImpersonationClaims,
+} from '@/lib/impersonation';
+import { resolveBusinessOwnerAccess } from '@/lib/businessAccess';
 
 export type DashboardAccess = {
   userId: string;
@@ -17,6 +22,8 @@ export type DashboardAccess = {
   businessSlug: string;
   businessRole: string;
   permissions: string[];
+  /** The platform admin's userId when this is an impersonated session (Phase 10). */
+  impersonatedBy?: string;
 };
 
 export type DashboardAccessResult =
@@ -38,6 +45,29 @@ export async function resolveDashboardAccess(): Promise<DashboardAccessResult> {
 
   const claims = await verifyAccessToken(token, secret);
   if (!claims || !claims.sub) return { ok: false, redirectTo: '/login' };
+
+  // Phase 10 impersonation — a valid, unexpired impersonation cookie takes
+  // priority: render the TARGET business's dashboard as its Owner, with a
+  // banner controlled by DashboardAccess.impersonatedBy. The admin's platform
+  // permission is re-verified against the DB (near-instant revocation).
+  const impersonation = await readImpersonationFromCookies();
+  if (impersonation) {
+    const impersonated = await resolveImpersonatedAccess(impersonation);
+    if (impersonated) return { ok: true, access: impersonated };
+    return { ok: false, redirectTo: '/admin' };
+  }
+
+  // Redirect priority: platform membership outranks business membership.
+  // An active PlatformStaff row means this user belongs on /admin first, not
+  // the business dashboard — same rule as resolveSession (DB is source of
+  // truth, not the JWT claim). Without this, a stale business_user JWT from
+  // a dual-account login (now fixed to issue platform_admin) could still slip
+  // past this guard while the token is live.
+  const platformCheck = await prisma.platformStaff.findFirst({
+    where: { userId: claims.sub, isActive: true },
+    select: { id: true },
+  });
+  if (platformCheck) return { ok: false, redirectTo: '/admin' };
 
   if (claims.role !== 'business_user' || !claims.businessId) {
     // Customer / platform users have no dashboard — send them away entirely.
@@ -92,4 +122,50 @@ export async function requireDashboardAccess(): Promise<DashboardAccess> {
   const result = await resolveDashboardAccess();
   if (!result.ok) redirect(result.redirectTo);
   return result.access;
+}
+
+/**
+ * Build dashboard access for an impersonated platform session. Verifies the
+ * admin still actively holds `platform.impersonate`, then resolves the target
+ * business as its Owner. Returns null when anything is invalid (→ redirect to
+ * /admin so the admin isn't trapped in a broken state).
+ */
+async function resolveImpersonatedAccess(
+  imp: ImpersonationClaims,
+): Promise<DashboardAccess | null> {
+  const [admin, ownerAccess] = await Promise.all([
+    prisma.platformStaff.findFirst({
+      where: {
+        userId: imp.adminUserId,
+        isActive: true,
+        role: {
+          permissions: { some: { permission: { name: 'platform.impersonate' } } },
+        },
+      },
+      select: {
+        user: { select: { firstName: true, lastName: true, isActive: true } },
+      },
+    }),
+    resolveBusinessOwnerAccess(imp.businessId),
+  ]);
+
+  if (!admin || !admin.user.isActive || !ownerAccess) return null;
+
+  const business = await prisma.business.findUnique({
+    where: { id: imp.businessId },
+    select: { name: true, slug: true, onboardingStep: true },
+  });
+  if (!business) return null;
+
+  return {
+    userId: imp.adminUserId,
+    firstName: admin.user.firstName,
+    lastName: admin.user.lastName,
+    businessId: imp.businessId,
+    businessName: business.name,
+    businessSlug: business.slug,
+    businessRole: ownerAccess.roleName,
+    permissions: ownerAccess.permissions,
+    impersonatedBy: imp.adminUserId,
+  };
 }

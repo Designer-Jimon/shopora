@@ -22,11 +22,19 @@ const fmtDate = (d: Date | null) => (d ? new Intl.DateTimeFormat('en-NG', { date
 const fmtNaira = (n: number) =>
   new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 0 }).format(n);
 
-export default async function SubscriptionsPage() {
-  await requireAdminAccess();
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-  const [subs, planAgg] = await Promise.all([
+export default async function SubscriptionsPage({ searchParams }: { searchParams: SearchParams }) {
+  await requireAdminAccess();
+  const sp = await searchParams;
+  const status = String(sp.status ?? '').trim();
+
+  const where: Record<string, unknown> = {};
+  if (status) where.status = status;
+
+  const [subs, revenueSubs, planAgg] = await Promise.all([
     prisma.subscription.findMany({
+      where,
       include: {
         business: { select: { id: true, name: true, slug: true } },
         plan: { select: { name: true, displayName: true, monthlyPriceNaira: true, annualPriceNaira: true } },
@@ -34,18 +42,23 @@ export default async function SubscriptionsPage() {
       orderBy: { currentPeriodEnd: 'desc' },
       take: 200,
     }),
+    prisma.subscription.findMany({
+      where: { status: { in: ['active', 'past_due'] } },
+      select: {
+        billingCycle: true,
+        plan: { select: { monthlyPriceNaira: true, annualPriceNaira: true } },
+      },
+    }),
     prisma.subscription.groupBy({ by: ['status'], _count: { _all: true } }),
   ]);
 
   const counts: Record<string, number> = {};
   for (const row of planAgg) counts[row.status] = row._count._all;
 
-  const mrr = subs
-    .filter((s) => s.status === 'active' || s.status === 'past_due')
-    .reduce((acc, s) => {
-      const app = s.billingCycle === 'annual' ? Number(s.plan.annualPriceNaira) / 12 : Number(s.plan.monthlyPriceNaira);
-      return acc + (Number.isFinite(app) ? app : 0);
-    }, 0);
+  const mrr = revenueSubs.reduce((acc, s) => {
+    const app = s.billingCycle === 'annual' ? Number(s.plan.annualPriceNaira) / 12 : Number(s.plan.monthlyPriceNaira);
+    return acc + (Number.isFinite(app) ? app : 0);
+  }, 0);
 
   return (
     <div>
@@ -53,7 +66,7 @@ export default async function SubscriptionsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text)]">Subscriptions</h1>
           <p className="mt-1 max-w-xl text-sm text-[var(--color-text-muted)]">
-            Active billing across the platform · MRR {fmtNaira(mrr)}.
+            Every business on the platform and its billing state · MRR {fmtNaira(mrr)}.
           </p>
         </div>
         <Link href="/admin/subscriptions/plans" className="rounded-md bg-[var(--color-primary)] px-3 py-2 text-sm font-bold text-white">
@@ -61,13 +74,36 @@ export default async function SubscriptionsPage() {
         </Link>
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2 text-xs">
-        {Object.entries(counts).map(([k, v]) => (
-          <span key={k} className="rounded-full px-2.5 py-1 font-semibold text-[var(--color-text-muted)]">
-            {STATUS_LABELS[k] ?? k}: <b className="text-[var(--color-text)]">{v}</b>
-          </span>
-        ))}
+      <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+        {Object.entries(counts).map(([k, v]) => {
+          const active = status === k;
+          return (
+            <Link
+              key={k}
+              href={active ? '/admin/subscriptions' : `/admin/subscriptions?status=${encodeURIComponent(k)}`}
+              className={`rounded-full px-2.5 py-1 font-semibold transition ${
+                active
+                  ? 'bg-[var(--color-primary)] text-white'
+                  : 'bg-[var(--color-tint, #f9fafb)] text-[var(--color-text-muted)] hover:bg-[var(--color-primary)]/10 hover:text-[var(--color-primary)]'
+              }`}
+              title={active ? `Clear filter — show all subscriptions` : `Filter to ${STATUS_LABELS[k] ?? k} subscriptions`}
+            >
+              {STATUS_LABELS[k] ?? k}: <b className={active ? '' : 'text-[var(--color-text)]'}>{v}</b>
+            </Link>
+          );
+        })}
+        {status && (
+          <Link href="/admin/subscriptions" className="rounded-full px-2.5 py-1 font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-primary)]">
+            ✕ Clear filter
+          </Link>
+        )}
       </div>
+
+      {status && (
+        <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+          Showing {STATUS_LABELS[status] ?? status} subscriptions only.
+        </p>
+      )}
 
       <div className="mt-6 overflow-hidden rounded-xl border border-[var(--color-border)] bg-white">
         <table className="w-full text-left text-xs">
@@ -105,7 +141,11 @@ export default async function SubscriptionsPage() {
               </tr>
             ))}
             {subs.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-[var(--color-text-muted)]">No subscriptions yet.</td></tr>
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-sm text-[var(--color-text-muted)]">
+                  {status ? `No ${STATUS_LABELS[status] ?? status} subscriptions match.` : 'No subscriptions yet.'}
+                </td>
+              </tr>
             )}
           </tbody>
         </table>

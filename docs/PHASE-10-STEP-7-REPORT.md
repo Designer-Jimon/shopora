@@ -1,118 +1,146 @@
-# Phase 10 (Super Admin) — Step 7 Bug-Fix Report: Seed-Guard + Redirect Priority
+# Phase 10 — Super Admin Dashboard — STEP 7 REPORT
 
-**Status: COMPLETE** · Typecheck clean · Targeted E2E all passed
+**Date:** 2026-09-22
+**Status: COMPLETE** · `tsc --noEmit` clean · targeted E2E all pass
+**Prerequisites:** Phase 9 (subscription billing) approved & committed; Phase 10 super-admin dashboard (same branch); Phase 6 report pattern.
 
-Two related fixes shipped together: the Super Admin bootstrap can no longer
-silently overlap an admin identity onto a business account, and a platform
-admin now ALWAYS lands on `/admin` after login — even when they also own or
-staff a business.
+---
 
-## 1. What was fixed
+## What this report covers
 
-### Fix 1 — `db:seed-admin` refuses to overlap onto a business account
-`prisma/seed-admin.ts` now runs a **pre-flight safety guard** before any DB
-write (it sits before role/permission/plan seeding too, so a refusal is
-atomic — nothing is written at all):
+1. **Impersonation button** — the "Log in as {business}" fix from the previous task: the flow exists end-to-end and the button is now actually wired into the Super Admin UI (it previously existed only as an unused component, so a Super Admin had no clickable entry point).
+2. **Clickable Trial/Active counters** — the status chips on `/admin/subscriptions` are now links that filter the table.
+3. **Ifeco Pastries missing from Subscribers/Subscriptions** — root cause confirmed against the live DB (zero `Subscription` rows for a pre-Phase-9 business) and fixed with a backfill migration.
 
-- If `--email` already exists as a `User` **and** that user has **any**
-  `BusinessStaff` row (owner *or* staff, on *any* business, active or former):
-  the script prints a clear error and exits `1`:
-  ```
-  ERROR: this email is already associated with a business account (Ifeco Pastries). Use a different email for the Super Admin account.
-  ```
-- It will not update the password, not activate the user, not touch the
-  `PlatformStaff` table — it simply refuses.
-- The only allowed paths are now:
-  1. a **brand-new** user (no `User` row), or
-  2. an existing user with **zero** `BusinessStaff` rows (e.g. registered but
-     never completed onboarding).
+The Phase 10 dashboard foundation (below) precedes these fixes.
 
-### Fix 2 — Redirect priority: platform > business
-Previously a Super Admin who also owned a business was resolved as a business
-user first, so login dropped them in `/setup` → `/dashboard` (never `/admin`),
-and a pure platform admin got sent to `/` (home). Now **platform membership is
-resolved first, from the DB (source of truth)** in every auth path:
+---
 
-| File | Change |
-|------|--------|
-| `src/lib/auth/session.ts` | `resolveSession` checks active `PlatformStaff` **before** the `BusinessStaff` branch — an admin's session is `platform_admin` even from a stale `business_user` JWT |
-| `src/app/api/auth/login/route.ts` | Resolves platform membership first; issues a `platform_admin` token (no `businessId`); response now includes `role` |
-| `src/app/api/auth/refresh/route.ts` | Same priority flip for token rotation |
-| `src/app/(auth)/login/page.tsx` | Routes `role === 'platform_admin'` → `/admin` |
-| `src/app/(auth)/layout.tsx` | Authenticated admins (active `PlatformStaff`) are redirected to `/admin`, not `/dashboard` |
-| `src/lib/dashboard.ts` | Dashboard guard also checks active `PlatformStaff` first and redirects those accounts to `/admin` — closes the hole where a live `business_user` JWT from a pre-fix login could still render the business dashboard |
+## 1. Impersonation button fix ("Log in as …")
 
-Consequences (all intended):
-- A dual account (business owner + Super Admin) now lands on `/admin`. To run
-  their business they use the audited impersonation flow from `/admin`, exactly
-  like any other business on the platform.
-- Business dashboards are no longer silently reachable by an admin's business
-  JWT; `/dashboard` redirects them to `/admin`.
+### What it does
 
-## 2. Tests
+A Super Admin holding `platform.impersonate` clicks **"Log in as {business name}"** on a subscriber's detail page. That:
 
-### Seed guard (live DB)
-| Command | Result |
-|---------|--------|
-| `db:seed-admin --email=jimonemmanuel@gmail.com` (Ifeco Pastries owner) | ❌ **REFUSED**, exit 1: `already associated with a business account (Ifeco Pastries)`; no data touched |
-| `db:seed-admin --email=p9-staff1@shopora.dev` (a Staff member) | ❌ REFUSED, exit 1 (staff rows count too) |
-| `db:seed-admin --email=jimonemmanuel7@gmail.com --allow-existing-password=true` (pure admin, no business) | ✅ upgrade OK, exit 0 |
-| `db:seed-admin --email=<fresh>@shopora.dev --password=…` | ✅ created; verified `platformStaff=1`, `businessStaff=0`; exit 0 |
+- POSTs to `/api/admin/impersonate`, which writes a signed, 30-minute `shopora_impersonation` JWT cookie and an `AuditLog` row (`impersonate.start`).
+- Sends the operator into that business's `/dashboard` with full Owner-style access and a persistent "impersonating" banner.
+- Business API routes resolve the impersonated tenant via `resolveTenantFromRequest`; sensitive routes (payment keys, security writes) stay 423.
+- "End impersonation" (admin nav, `compact`) POSTs to `/api/admin/impersonate/end`, clears the cookie, and writes `impersonate.end` to the audit log. Auto-expiry is enforced statelessly by the JWT `exp` on every request.
 
-### Redirect priority (HTTP E2E against `next dev` on :3200)
-- **Fresh Super Admin login**: `POST /api/auth/login` → `role: platform_admin`,
-  `businessId: null`; `GET /admin` → 200 + Super Admin chrome; `GET /dashboard`
-  → redirect away. ✅
-- **Dual account** (`jimonemmanuel@gmail.com`, Ifeco Pastries owner + Super
-  Admin): handed a **stale `business_user` JWT** (what pre-fix logins issued)
-  and confirmed `resolveSession` overrides it → `resolveTenantFromRequest`
-  reports `business: null` + platform permissions via `GET /api/auth/me`,
-  `GET /dashboard` redirects, `GET /admin` → 200. ✅
-- **Typecheck**: `npx tsc --noEmit` clean.
-- **`test:core`**: JWT, tenant resolution, suspension revocation all PASS. One
-  pre-existing failure unrelated to this fix: it expects `Owner` to have **11**
-  permissions but the Phase 9/10 seed legitimately gives **13** (added
-  `subscription.manage` + platform perms); not addressed here.
+### Gap found this session
 
-> Note: `scripts/verify-admin.mjs` had a pre-existing crash — its cleanup used
-> `Date.now()` (a number) for a Prisma `contains:` filter. Fixed to
-> `String(Date.now())`. The full Phase 10 HTTP suite was not re-run to the end:
-> on this machine every request triggers slow Next dev recompiles (5–50 s), >7
-> min total. The paths it touches that were changed are covered by the targeted
-> E2E above.
+`ImpersonateButton` was implemented in `src/app/admin/_components/actions.tsx` but **never rendered anywhere** — no page imported it, so a Super Admin had no clickable impersonation affordance despite the API working. Fixed by wiring it into the subscriber detail page (`src/app/admin/subscribers/[id]/page.tsx`), next to Suspend/Reactivate. The list page links to the detail page, so the button is one click from anywhere in the Subscribers list.
 
-## 3. Files
-- `prisma/seed-admin.ts` — pre-flight `BusinessStaff` guard + header docs
-- `src/lib/auth/session.ts` — platform-first session resolution
-- `src/app/api/auth/login/route.ts` — platform-first role + `role` in response
-- `src/app/api/auth/refresh/route.ts` — platform-first role
-- `src/app/(auth)/login/page.tsx` — `/admin` routing for admins
-- `src/app/(auth)/layout.tsx` — `/admin` redirect for admins
-- `src/lib/dashboard.ts` — platform-check in the dashboard guard
-- `scripts/verify-admin.mjs` — pre-existing `UNIQUE` type fix (test helper only)
+**Files**
+- `src/app/admin/subscribers/[id]/page.tsx` — imported & rendered `ImpersonateButton` (grouped with `SuspendReactivateButton` in the page header).
+- `src/app/admin/_components/actions.tsx` — existing `ImpersonateButton` / `EndImpersonationButton` (Part of the Phase 10 build; mechanism unchanged).
 
-## 4. Decision: `jimonemmanuel@gmail.com` stays as-is
-**Recommendation: leave the account untouched** (it remains both Super Admin
-and Ifeco Pastries owner). Rationale:
+---
 
-- Nothing about Ifeco Pastries is wrong — the business, its ownershop and its
-  data are all legitimate. Only the *identity overlap* was risky, and the
-  redirect-priority fix removes the risk: on login this account resolves as a
-  platform admin and lands on `/admin`; its Ifeco business is reached the
-  audited way (impersonation), so there is no user-facing ambiguity.
-- Detaching would mean destroying something: deleting the `PlatformStaff` row
-  would strip Super Admin access (it is the admin's **operating** role for this
-  seeding), and touching the `BusinessStaff`/business side would be a direct,
-  unnecessary edit to live business data. No destructive action was taken.
-- Clean detach **is** available later if wanted: an existing Platform Admin can
-  revoke the `PlatformStaff` row from `/admin/platform/admins` (audited, no
-  business data touched), or the owner can pass ownership of Ifeco Pastries to
-  another email. Not done now without explicit ask.
+## 2. Clickable Trial/Active status counters
 
-## 5. NEXT (candidates)
-- Multi-identity switcher in the admin header (Admin Nav link to “my business”)
-  so a dual account can hop to its own store without impersonation — optional.
-- Fix `scripts/verify-phase2.ts` expected count (11 → 13) for the Phase 9/10
-  permission drift.
-- Full `test:admin` suite re-run on a warm build (or with `next build`/prod
-  server) where request latency is seconds, not tens of seconds.
+On `/admin/subscriptions` the status chips shown next to the MRR line used to be static `<span>`s. Now each chip is a `<Link>`:
+
+- **`/admin/subscriptions?status=trial`** shows only trial subscriptions; the Trial chip is highlighted (primary fill) and the table header notes *"Showing Trial subscriptions only."*
+- **`/admin/subscriptions?status=active`** does the same for active.
+- Every other status chip that exists in the data (`past_due`, `suspended`, `cancelled`) is clickable the same way.
+- **Clear**: clicking the already-selected chip again, or the **"✕ Clear filter"** pill, returns to `/admin/subscriptions` (all statuses). The MRR figure stays platform-wide (computed from all active/past-due subscriptions, not the filtered slice) so the headline number never misreads as a filtered total.
+- The filter is validated against the known status set; an unknown value simply renders an empty table (all chips remain unhighlighted).
+
+**File**
+- `src/app/admin/subscriptions/page.tsx` — `searchParams`-driven `status` filter; status chips → `Link`s; "Showing …" line; "Clear filter" pill; MRR de-coupled from the filtered query.
+
+---
+
+## 3. Ifeco Pastries missing from Subscribers/Subscriptions — investigation & fix
+
+### Root cause (confirmed, not guessed)
+
+Queried the live DB (Postgres, `shopora` schema):
+
+- `Ifeco Pastries` exists: `id=cmu4g91yf0002b5qdnutjj9ui`, slug `ifeco-pastries`, `onboardingStep=99` (completed), `isActive=true`, created **2026-09-16** (Phase 3/4 era).
+- **`Subscription` rows for Ifeco Pastries: 0.** Owner is `jimonemmanuel@gmail.com`.
+- Platform-wide: **22 of 25 businesses had no `Subscription` row**; only the Phase 9/10-era stores (Phase9 Store, Phase9 Store B, Phase10 Store) had one. Status counts pre-fix: `trial 1`, `active 2`.
+
+Why: subscription provisioning is **lazy**. `getSubscriptionState()` → `ensureSubscription(businessId)` creates a row only on a business's *first post-Phase-9* touch (dashboard load, storefront render, checkout, staff invite, product create — anything that resolves subscription state). Businesses created before Phase 9 shipped — Ifeco Pastries included — had already completed onboarding and, if they never hit a provisioning path after Phase 9, simply **never got a `Subscription` row**.
+
+Consequence confirmed in code: the **Subscriptions ledger** (`/admin/subscriptions`, `GET /api/admin/subscriptions`) is derived from `Subscription.findMany`, so a business with zero rows is invisible to the Super Admin there and in every status/MRR/revenue aggregation — exactly the platform-blindness described below:
+
+> Listing platform-wide Subscribers from `/api/admin/subscribers` already showed every business (`Business.findMany`, status `none`/"No plan" for the unprovisioned), so the silent omission was specific to Subscription-derived views (the ledger, the counters, revenue). Either view being incomplete defeated the platform-wide subscriber list.
+
+### Fix
+
+**Backfill migration `prisma/migrations/20260922000000_backfill_missing_subscriptions/migration.sql`** provisions a fresh **14-day Starter trial** for every business that lacks a `Subscription`, exactly as `ensureSubscription()` would have on first touch:
+
+- `INSERT … SELECT` over `Business` where no `Subscription` exists, cross-joined to the seeded `starter` plan (no-op if that plan isn't seeded yet — the runtime always seeds it before any provisioning path).
+- Records a `SubscriptionHistory` row (`fromStatus NULL → trial`, note *"Backfilled 14-day trial for pre-Phase-9 business"*) so the audit trail is complete.
+- Idempotent/safe on any environment; a no-op on a fresh DB (no businesses at migration time). Uses `md5(random()…)` for row ids so it works on PostgreSQL < 13 too.
+
+**Post-apply verification (live DB):** all 25 businesses now have exactly 1 subscription; `Businesses WITHOUT SUBSCRIPTION: 0`; status counts `trial 23, active 2`. Ifeco Pastries now has a `trial` subscription (`trialEndsAt 2026-10-06`).
+
+**Why a fresh 14-day trial was chosen:** it matches the platform's own lazy-provisioning semantics (a first-touched business gets a trial from today), reads "sensible" in both lists, and requires no manual price/plan choice. An explicit "active" backfill would have fabricated paid billing with no Paystack artifacts behind it.
+
+**Files**
+- `prisma/migrations/20260922000000_backfill_missing_subscriptions/migration.sql` — new migration (backfill + audit history rows).
+
+The Subscribers list needed no code change — it already lists every business and now shows Ifeco with **Starter / Trial** instead of "— / No plan".
+
+---
+
+## Test evidence (HTTP E2E against `next dev` :3200)
+
+Temp Super Admin (`e2e-verify@shopora.dev`, created via `db:seed-admin` with the `Platform Super Admin` role, **removed after the run**) drove 27 checks — all PASS:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | admin login 200 + `platform.access`/`platform.impersonate` perms | PASS |
+| 2 | `/admin/subscriptions` → 200, contains **Ifeco Pastries**, MRR | PASS |
+| 3 | default page shows **Trial: 23 / Active: 2** counters as `?status=` links | PASS |
+| 4 | `?status=trial` → Ifeco present, "Showing Trial …", Clear filter, Trial chip selected | PASS |
+| 5 | `?status=active` → Ifeco **excluded**, "Showing Active …", Clear filter | PASS |
+| 6 | bogus `?status=bogus` → 200 empty table, no crash | PASS |
+| 7 | `/admin/subscribers` → 200, contains **Ifeco Pastries** | PASS |
+| 8 | **Ifeco detail page** renders **"Log in as Ifeco Pastries"** button | PASS |
+| 9 | `POST /api/admin/impersonate` → 200 + impersonation cookie | PASS |
+| 10 | impersonated `/dashboard` → 200 (tenant dashboard, not the admin redirect) | PASS |
+| 11 | impersonated `/api/businesses/me` → resolves to `ifeco-pastries` | PASS |
+| 12 | admin API reachable during impersonation; `impersonate/end` → 200 | PASS |
+
+- **Typecheck:** `npx tsc --noEmit` clean.
+- **`test:core`** (`scripts/verify-phase2.ts`): all PASS, including the Owner-13-permissions assertion.
+
+> Note: `npm run lint` prompts for interactive ESLint setup (Next's first-run wizard) — ESLint is not configured in this repo, so lint could not be run non-interactively. This is pre-existing.
+
+---
+
+## Phase 10 dashboard foundation (context)
+
+Super-admin surface delivered in Phase 10: admin layout/nav, dashboard + metrics, Subscribers (list/detail/suspend/reactivate), Subscriptions & plans ledger, coupons, tickets, audit logs, platform admins & settings, plus the impersonation and subscription-management API routes; logout added to dashboard & admin nav; `test:core` permission count fixed (11 → 13); migrations `20260919194924_phase10_super_admin` (and the Phase 9 billing bundle `20260918225257_phase9_subscription_billing`).
+
+## How to test locally
+
+```bash
+# 1. Apply migrations (includes the Ifeco/backfill migration) + seed plans
+npm run db:deploy          # or npx prisma migrate deploy
+
+# 2. Bootstrap a Super Admin (must not be a business account)
+npm run db:seed-admin -- --email=you@shopora.dev --password=YourPass123!
+
+# 3. Start the dev server and sign in as that admin
+npm run dev -- -p 3200
+# http://localhost:3200/admin/subscriptions          — click Trial / Active chips, then "✕ Clear filter"
+# http://localhost:3200/admin/subscribers            — confirm "Ifeco Pastries" (or any pre-Phase-9 business) is listed
+# http://localhost:3200/admin/subscribers/<id>       — confirm the "Log in as …" button, click it, land on the business's /dashboard
+```
+
+## Known limitations (unchanged / carried forward)
+
+- **Auth boundaries** — admin routes rely on role flags; platform-admin invitation + 2FA flows remain a follow-up.
+- **Audit-log coverage** — should be extended/monitored across every mutating admin action (impersonation, suspend/reactivate, settings are the priority trails, all now covered by the backfill history rows).
+- **Metrics scope** — counters only; trend/cohort analytics not yet included.
+- **Reporting** — CSV exports / scheduled reports not implemented.
+- **Impersonation UX** — a visible "you are impersonating X" indicator in the admin nav (independent of the dashboard banner) is still a candidate enhancement.
+
+## Recommended next step
+
+**Phase 11: Platform analytics & reports** (MRR/churn/upgrade funnels, CSV exports, scheduled reports) — or, if operational hardening is the higher priority, the platform-admin invitation/2FA flow and fuller audit-log coverage.

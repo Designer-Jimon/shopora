@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requireAdminAccess } from '@/lib/admin';
 import prisma from '@/lib/prisma';
-import { SuspendReactivateButton } from '@/app/admin/_components/actions';
+import { ImpersonateButton, SuspendReactivateButton } from '@/app/admin/_components/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,9 +78,12 @@ export default async function SubscriberDetailPage({ params }: { params: Promise
             </span>
           </div>
         </div>
-        {subscription && (
-          <SuspendReactivateButton businessId={business.id} status={subscription.status} />
-        )}
+        <div className="flex items-center gap-2">
+          {subscription && (
+            <SuspendReactivateButton businessId={business.id} status={subscription.status} />
+          )}
+          <ImpersonateButton businessId={business.id} businessName={business.name} />
+        </div>
       </div>
 
       <p className="mt-2 max-w-2xl text-sm text-[var(--color-text-muted)]">

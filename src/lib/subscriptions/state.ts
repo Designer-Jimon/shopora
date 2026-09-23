@@ -1,17 +1,21 @@
 // SHOPORA subscription state — the single source of truth for a business's
 // subscription. Every enforcement point (dashboard load, storefront layout,
-// checkout API, product/staff limits) goes through getSubscriptionState():
+// checkout API, product/staff/order limits) goes through getSubscriptionState():
 //
 //   ensurePlansSeeded() → ensureSubscription(businessId) → checkSubscription()
 //   → read the row → cache the snapshot in-process for TTL.
 //
 // The cache means a busy storefront costs ~1 DB round per 30s per process
-// instead of one per pageview, and checkSubscription (which can write status
-// flips) only ever runs on a cache miss. Flips are forward-only and guarded by
-// updateMany, so concurrent misses are harmless.
+// instead of one per pageview, and checkSubscription (which can downgrade on
+// calendar time) only ever runs on a cache miss. Downgrades are guarded by
+// downgradeToFree (transactional, unique businessId), so concurrent misses are
+// harmless.
 //
-// Statuses: trial → past_due → suspended → cancelled; active stays until its
-// period end then goes past_due. See Subscription model comment in the schema.
+// Phase 11 lifecycle (see schema Comment): new businesses get a 14-day trial
+// on the PAID Starter plan; overdue trials (and lapsed paid rows with no native
+// Paystack subscription) SOFT-DOWNGRADE to active on the Free plan. Past
+// states past_due/suspended/cancelled only survive as legacy rows; suspended is
+// Phase 10 moderation and is never auto-recovered here.
 
 import prisma from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
@@ -19,15 +23,14 @@ import {
   addDays,
   BILLING_CYCLES,
   ensurePlansSeeded,
-  GRACE_DAYS,
   PLAN_KEYS,
   SUBSCRIPTION_STATE_TTL_MS,
   SUBSCRIPTION_STATUSES,
-  SUSPEND_DAYS,
   TRIAL_DAYS,
   type BillingCycle,
   type SubscriptionStatus,
 } from './plans';
+import { downgradeToFree, pendingDowngradeReason } from './downgrade';
 
 export type SubscriptionState = {
   businessId: string;
@@ -36,13 +39,17 @@ export type SubscriptionState = {
   planDisplayName: string;
   productLimit: number;
   staffLimit: number;
+  orderLimit: number;
   customDomain: boolean;
+  removeBranding: boolean;
   analyticsTier: string;
+  onFreePlan: boolean;
   billingCycle: BillingCycle;
   trialEndsAt: Date | null;
   currentPeriodEnd: Date;
   cancelledAt: Date | null;
   hasAuthorizationCode: boolean;
+  hasNativeSubscription: boolean;
 };
 
 const stateCache = new Map<string, { state: SubscriptionState; expiresAt: number }>();
@@ -53,8 +60,9 @@ export function invalidateSubscriptionCache(businessId: string): void {
 }
 
 /**
- * Provision the business's trial subscription lazily (first call on any
- * entry point). Idempotent under concurrency thanks to the @unique businessId.
+ * Provision the business's subscription lazily (first call on any entry
+ * point): a 14-day TRIAL on the PAID Starter plan. Idempotent under
+ * concurrency thanks to the @unique businessId.
  */
 export async function ensureSubscription(businessId: string): Promise<void> {
   const existing = await prisma.subscription.findUnique({
@@ -64,9 +72,9 @@ export async function ensureSubscription(businessId: string): Promise<void> {
   if (existing) return;
 
   await ensurePlansSeeded();
-  const starter = await prisma.subscriptionPlan.findUnique({ where: { name: PLAN_KEYS.starter } });
-  if (!starter) {
-    throw new Error(`Starter plan not found — cannot provision trial for ${businessId}`);
+  const trialPlan = await prisma.subscriptionPlan.findUnique({ where: { name: PLAN_KEYS.starter } });
+  if (!trialPlan) {
+    throw new Error(`Starting plan not found — cannot provision trial for ${businessId}`);
   }
 
   const now = new Date();
@@ -75,13 +83,13 @@ export async function ensureSubscription(businessId: string): Promise<void> {
     await prisma.subscription.create({
       data: {
         businessId,
-        planId: starter.id,
+        planId: trialPlan.id,
         billingCycle: BILLING_CYCLES.monthly,
         status: SUBSCRIPTION_STATUSES.trial,
         trialEndsAt,
         currentPeriodEnd: trialEndsAt,
         history: {
-          create: { fromStatus: null, toStatus: SUBSCRIPTION_STATUSES.trial, note: 'Free trial started' },
+          create: { fromStatus: null, toStatus: SUBSCRIPTION_STATUSES.trial, note: 'Paid-plan trial started' },
         },
       },
     });
@@ -94,72 +102,26 @@ export async function ensureSubscription(businessId: string): Promise<void> {
 }
 
 /**
- * Advance the state machine by calendar time. Forward-only; only flips when a
- * deadline has passed, inside a guarded transaction so concurrent flippers
- * can't double-write history. No-op for businesses far from a deadline beyond
- * a single indexed read (the row is already in the cache path's hot set).
+ * Advance the state machine by calendar time (on-touch mirror of the daily
+ * job). Overdue trials and lapsed paid rows downgrade to active-on-Free via
+ * the shared pendingDowngradeReason/downgradeToFree pair. No-op for live rows.
  */
 export async function checkSubscription(businessId: string): Promise<void> {
   const sub = await prisma.subscription.findUnique({
     where: { businessId },
-    select: { id: true, status: true, trialEndsAt: true, currentPeriodEnd: true },
+    select: {
+      businessId: true,
+      status: true,
+      plan: { select: { name: true } },
+      trialEndsAt: true,
+      currentPeriodEnd: true,
+      paystackSubscriptionCode: true,
+    },
   });
   if (!sub) return;
 
-  const now = new Date();
-  let next:
-    | { status: SubscriptionStatus; currentPeriodEnd: Date; cancelledAt?: Date; note: string }
-    | null = null;
-
-  if (sub.status === SUBSCRIPTION_STATUSES.trial && sub.trialEndsAt && now >= sub.trialEndsAt) {
-    next = {
-      status: SUBSCRIPTION_STATUSES.pastDue,
-      currentPeriodEnd: addDays(now, GRACE_DAYS),
-      note: 'Free trial ended — payment grace period started',
-    };
-  } else if (sub.status === SUBSCRIPTION_STATUSES.active && now >= sub.currentPeriodEnd) {
-    next = {
-      status: SUBSCRIPTION_STATUSES.pastDue,
-      currentPeriodEnd: addDays(now, GRACE_DAYS),
-      note: 'Billing period ended — renewal grace period started',
-    };
-  } else if (sub.status === SUBSCRIPTION_STATUSES.pastDue && now >= sub.currentPeriodEnd) {
-    next = {
-      status: SUBSCRIPTION_STATUSES.suspended,
-      currentPeriodEnd: addDays(now, SUSPEND_DAYS),
-      note: 'Grace period elapsed — subscription suspended',
-    };
-  } else if (sub.status === SUBSCRIPTION_STATUSES.suspended && now >= sub.currentPeriodEnd) {
-    next = {
-      status: SUBSCRIPTION_STATUSES.cancelled,
-      currentPeriodEnd: sub.currentPeriodEnd,
-      cancelledAt: now,
-      note: 'Suspension period elapsed — subscription cancelled',
-    };
-  }
-  if (!next) return;
-
-  await prisma.$transaction(async (tx) => {
-    const flipped = await tx.subscription.updateMany({
-      where: { id: sub.id, status: sub.status },
-      data: {
-        status: next!.status,
-        currentPeriodEnd: next!.currentPeriodEnd,
-        cancelledAt: next!.cancelledAt ?? null,
-      },
-    });
-    if (flipped.count === 0) return; // another flipper won — keep their history
-    await tx.subscriptionHistory.create({
-      data: {
-        subscriptionId: sub.id,
-        fromStatus: sub.status,
-        toStatus: next!.status,
-        note: next!.note,
-      },
-    });
-  });
-
-  invalidateSubscriptionCache(businessId);
+  const reason = pendingDowngradeReason(sub, new Date());
+  if (reason) await downgradeToFree(sub.businessId, reason);
 }
 
 async function loadState(businessId: string): Promise<SubscriptionState> {
@@ -175,13 +137,17 @@ async function loadState(businessId: string): Promise<SubscriptionState> {
     planDisplayName: sub.plan.displayName,
     productLimit: sub.plan.productLimit,
     staffLimit: sub.plan.staffLimit,
+    orderLimit: sub.plan.orderLimit,
     customDomain: sub.plan.customDomain,
+    removeBranding: sub.plan.removeBranding,
     analyticsTier: sub.plan.analyticsTier,
+    onFreePlan: sub.plan.name === PLAN_KEYS.free,
     billingCycle: sub.billingCycle as BillingCycle,
     trialEndsAt: sub.trialEndsAt,
     currentPeriodEnd: sub.currentPeriodEnd,
     cancelledAt: sub.cancelledAt,
     hasAuthorizationCode: !!sub.paystackAuthorizationCode,
+    hasNativeSubscription: !!sub.paystackSubscriptionCode,
   };
 }
 
@@ -205,4 +171,16 @@ export async function getSubscriptionState(businessId: string): Promise<Subscrip
 /** True when the business may still transact on the checkout path. */
 export function isCheckoutAllowed(status: SubscriptionStatus): boolean {
   return status === SUBSCRIPTION_STATUSES.trial || status === SUBSCRIPTION_STATUSES.active || status === SUBSCRIPTION_STATUSES.pastDue;
+}
+
+/** Start of the current calendar month (used for the monthly order cap). */
+export function monthStart(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
+
+/** Count of orders placed this calendar month (drives the orderLimit cap). */
+export async function ordersThisMonth(businessId: string, now: Date = new Date()): Promise<number> {
+  return prisma.order.count({
+    where: { businessId, createdAt: { gte: monthStart(now) } },
+  });
 }

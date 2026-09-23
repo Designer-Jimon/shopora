@@ -29,21 +29,18 @@ export const GET = withAdminHandler('platform.subscribers.read', async (request:
     ];
   }
 
-  const [rows, total] = await Promise.all([
-    prisma.business.findMany({
-      where,
-      include: {
-        subscription: {
-          include: { plan: { select: { displayName: true, name: true } } },
-        },
-        _count: { select: { products: true, orders: true, staff: true } },
+  const rows = await prisma.business.findMany({
+    where,
+    include: {
+      subscription: {
+        include: { plan: { select: { displayName: true, name: true } } },
       },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    prisma.business.count({ where }),
-  ]);
+      _count: { select: { products: true, orders: true, staff: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  });
 
   const businesses = rows
     .map((b) => ({

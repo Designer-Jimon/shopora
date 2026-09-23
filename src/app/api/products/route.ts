@@ -68,6 +68,16 @@ export const POST = requireAuthHandler(async (request: NextRequest) => {
     return jsonError('Validation failed', 422);
   }
 
+  // Tenant isolation: a category can only be used if it belongs to this business.
+  const categoryId = (body.categoryId as string) || null;
+  if (categoryId) {
+    const owned = await prisma.category.findFirst({
+      where: { id: categoryId, businessId: ctx.businessId },
+      select: { id: true },
+    });
+    if (!owned) return authErrors.badRequest('Category does not belong to this business');
+  }
+
   // Generate slug, ensure uniqueness per business
   let slug = slugify(body.name as string) || 'product';
   let counter = 2;
@@ -79,7 +89,7 @@ export const POST = requireAuthHandler(async (request: NextRequest) => {
   const product = await prisma.product.create({
     data: {
       businessId: ctx.businessId,
-      categoryId: (body.categoryId as string) || null,
+      categoryId,
       name: (body.name as string).trim(),
       slug,
       description: (body.description as string)?.trim() || null,
@@ -106,7 +116,7 @@ export const POST = requireAuthHandler(async (request: NextRequest) => {
 
   // Create variants if provided
   if (Array.isArray(body.variants) && body.variants.length > 0) {
-    const variantData = body.variants.map((v: Record<string, unknown>, i: number) => ({
+    const variantData = body.variants.map((v: Record<string, unknown>) => ({
       productId: product.id,
       sku: (v.sku as string)?.trim() || null,
       color: (v.color as string)?.trim() || null,

@@ -1,14 +1,17 @@
-// Phase 9 HTTP E2E — subscription billing.
+// Phase 11 HTTP E2E — native Paystack subscription billing.
 //
-// Covers: lazy trial provisioning, plan catalogue, product limit from plan,
-// staff seat limit via invite, calendar-driven status flips ON THE STOREFRONT
-// (the second checkSubscription call site), storefront offline when cancelled,
-// dashboard write-freeze when cancelled, checkout blocking when suspended,
-// platform-key webhook activation (+ idempotency + bad signature), storefront
-// coming back online after reactivation, tenant isolation.
+// Covers: lazy trial provisioning on the PAID Starter plan, monthly-only plan
+// catalogue with order limits + removeBranding surfaced on the API, instant
+// Free-plan activation (downgrade), storefront order-limit blocking, NATIVE
+// webhook lifecycle (subscription.create, ledger replay idempotency, bad
+// signature, invoice.payment_failed downgrade, charge.success renewal
+// reactivation, subscription.disable), removeBranding toggling the storefront
+// footer, trial-expiry downgrade on the storefront call site, graceful offline
+// paid-checkout degradation, tenant isolation.
 //
 // Run against a dev server started with SUBSCRIPTION_STATE_TTL_MS=0 so direct
-// DB mutations are observed immediately.
+// DB mutations are observed immediately. Native webhook payloads are forged
+// locally and verified with the PAYSTACK_SECRET_KEY — no network required.
 
 import { createRequire } from 'node:module';
 import { createHmac } from 'node:crypto';
@@ -20,9 +23,12 @@ const require = createRequire(import.meta.url);
 const { PrismaClient } = require('@prisma/client');
 
 const BASE = process.env.API_BASE || 'http://localhost:3200';
-const EMAILS = { ownerA: 'p9-owner-a@shopora.dev', ownerB: 'p9-owner-b@shopora.dev' };
-const BUSINESS_NAME = 'Phase9 Store';
-const BUSINESS_NAME_B = 'Phase9 Store B';
+const EMAILS = { ownerA: 'p11-owner-a@shopora.dev', ownerB: 'p11-owner-b@shopora.dev' };
+const BUSINESS_NAME = 'Phase11 Store';
+const BUSINESS_NAME_B = 'Phase11 Store B';
+
+const FREE_PLAN = 'starter';   // DB row = Free (₦0)
+const STARTER_PLAN = 'business'; // DB row = Starter (₦10k) — paid trial target
 
 const prisma = new PrismaClient();
 let failed = false;
@@ -43,6 +49,10 @@ function envValue(name, fallback = '') {
   }
   return fallback;
 }
+
+const PLATFORM_SECRET = envValue('PAYSTACK_SECRET_KEY', 'sk_test_FAKE_PLATFORM_SUB_KEY_123456789');
+const FAKE_KEY = PLATFORM_SECRET.startsWith('sk_test_FAKE');
+const sign = (body, secret = PLATFORM_SECRET) => createHmac('sha512', secret).update(body).digest('hex');
 
 async function req(path, method = 'GET', body, headers = {}) {
   const isStringBody = typeof body === 'string';
@@ -70,7 +80,7 @@ function cartCookie(setCookie) {
 
 async function register(email, businessName) {
   const r = await req('/api/auth/register', 'POST', {
-    email, password: 'Phase9Pass123!', firstName: 'P', lastName: 'Nine', kind: 'business', businessName,
+    email, password: 'Phase11Pass123!', firstName: 'P', lastName: 'Eleven', kind: 'business', businessName,
   });
   return { status: r.status, cookie: accessCookie(r.setCookie) };
 }
@@ -90,6 +100,31 @@ async function completeOnboarding(cookie) {
   return { ok: true, slug: final.data.slug };
 }
 
+async function createPlan(name, { productLimit, staffLimit, orderLimit, removeBranding = false }) {
+  await prisma.subscriptionPlan.create({
+    data: {
+      name,
+      displayName: 'P11 Test',
+      description: 'test plan',
+      monthlyPriceNaira: 100,
+      annualPriceNaira: 1100,
+      productLimit,
+      staffLimit,
+      orderLimit,
+      customDomain: false,
+      removeBranding,
+      analyticsTier: 'basic',
+      isActive: true,
+      sortOrder: 99,
+    },
+  });
+}
+
+async function webhook(event, data, secret = PLATFORM_SECRET) {
+  const body = JSON.stringify({ event, data });
+  return req('/api/webhooks/paystack', 'POST', body, { 'x-paystack-signature': sign(body, secret), 'Content-Type': 'text/plain' });
+}
+
 async function cleanup() {
   const bizIds = await prisma.business.findMany({ where: { name: { in: [BUSINESS_NAME, BUSINESS_NAME_B] } }, select: { id: true } });
   const ids = bizIds.map((b) => b.id);
@@ -98,34 +133,34 @@ async function cleanup() {
     await prisma.orderStatusHistory.deleteMany({ where: { order: { businessId: { in: ids } } } });
     await prisma.order.deleteMany({ where: { businessId: { in: ids } } });
   }
+  await prisma.subscriptionHistory.deleteMany({ where: { subscription: { businessId: { in: ids } } } });
+  await prisma.subscription.deleteMany({ where: { businessId: { in: ids } } });
   await prisma.businessStaff.deleteMany({ where: { user: { email: { in: Object.values(EMAILS) } } } });
   await prisma.business.deleteMany({ where: { name: { in: [BUSINESS_NAME, BUSINESS_NAME_B] } } });
   await prisma.user.deleteMany({ where: { email: { in: Object.values(EMAILS) } } });
-  await prisma.subscriptionPlan.deleteMany({ where: { name: { startsWith: 'p9-micro' } } });
-}
-
-async function createTempPlan(productLimit, staffLimit) {
-  const name = `p9-micro-${Date.now()}`;
-  await prisma.subscriptionPlan.create({
-    data: {
-      name,
-      displayName: 'P9 Micro',
-      description: 'test plan',
-      monthlyPriceNaira: 100,
-      annualPriceNaira: 1000,
-      productLimit,
-      staffLimit,
-      customDomain: false,
-      analyticsTier: 'basic',
-      isActive: true,
-      sortOrder: 99,
-    },
-  });
-  return name;
+  // Scratch plans first: gather their ids so we can clear ANY leftover
+  // subscription-domain rows that RESTRICT-reference them (orphaned rows from
+  // earlier interrupted runs may point at businesses that were already removed).
+  const scratchPlanIds = (
+    await prisma.subscriptionPlan.findMany({ where: { name: { startsWith: 'p9-' } }, select: { id: true } })
+  )
+    .concat(
+      await prisma.subscriptionPlan.findMany({ where: { name: { startsWith: 'p10-' } }, select: { id: true } })
+    )
+    .concat(
+      await prisma.subscriptionPlan.findMany({ where: { name: { startsWith: 'p11-' } }, select: { id: true } })
+    )
+    .map((r) => r.id);
+  if (scratchPlanIds.length > 0) {
+    await prisma.subscriptionHistory.deleteMany({ where: { subscription: { planId: { in: scratchPlanIds } } } });
+    await prisma.subscription.deleteMany({ where: { planId: { in: scratchPlanIds } } });
+  }
+  await prisma.subscriptionPlan.deleteMany({ where: { id: { in: scratchPlanIds } } });
+  await prisma.webhookEvent.deleteMany({ where: { provider: 'paystack', eventId: { in: ['1001', '1002', '1003', '1004', '1005', '1006', '1007'] } } });
 }
 
 async function main() {
-  console.log('== Phase 9 subscription E2E ==\n');
+  console.log('== Phase 11 native-subscription E2E ==\n');
   await cleanup();
 
   // 1. Register + onboard business A
@@ -140,181 +175,207 @@ async function main() {
   ok('business A exists', !!businessA, 'missing');
   const bizAId = businessA.id;
 
-  // 2. Lazy trial provisioning (dashboard entry)
-  console.log('\n2. Trial provisioned on first dashboard load');
+  // 2. Lazy trial provisioning — on the PAID Starter plan now
+  console.log('\n2. Trial provisioned on the paid Starter plan');
   const subGet = await req('/api/subscription', 'GET', undefined, authA);
   ok('GET /api/subscription 200', subGet.status === 200, `status=${subGet.status} ${subGet.text}`);
   ok('status = trial', subGet.data?.status === 'trial', JSON.stringify(subGet.data?.status));
-  ok('plan = starter', subGet.data?.planKey === 'starter', JSON.stringify(subGet.data?.planKey));
-  ok('starter productLimit 50', subGet.data?.plans?.find((p) => p.key === 'starter')?.productLimit === 50, JSON.stringify(subGet.data?.plans));
+  ok('planKey = business (paid Starter row)', subGet.data?.planKey === STARTER_PLAN, JSON.stringify(subGet.data?.planKey));
+  ok('onFreePlan = false during trial', subGet.data?.onFreePlan === false, JSON.stringify(subGet.data?.onFreePlan));
   const trialRowA = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
   ok('subscription row exists', !!trialRowA, 'missing');
   ok('trial 14 days out', trialRowA?.trialEndsAt && trialRowA.trialEndsAt.getTime() > Date.now() + 13 * 86400_000, `trialEndsAt=${trialRowA?.trialEndsAt}`);
   ok('catalogue has 3 plans', (subGet.data?.plans?.length ?? 0) === 3, `n=${subGet.data?.plans?.length}`);
-  ok('billing history has trial entry', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, toStatus: 'trial' } }) >= 1, 'missing');
+  const freePlanMeta = subGet.data?.plans?.find((p) => p.key === FREE_PLAN);
+  const starterPlanMeta = subGet.data?.plans?.find((p) => p.key === STARTER_PLAN);
+  ok('Free plan = ₦0', freePlanMeta?.monthlyPriceNaira === 0, JSON.stringify(freePlanMeta?.monthlyPriceNaira));
+  ok('Free orderLimit 50', freePlanMeta?.orderLimit === 50, JSON.stringify(freePlanMeta?.orderLimit));
+  ok('Free removeBranding false', freePlanMeta?.removeBranding === false, JSON.stringify(freePlanMeta?.removeBranding));
+  ok('Starter (business) orderLimit 500', starterPlanMeta?.orderLimit === 500, JSON.stringify(starterPlanMeta?.orderLimit));
+  ok('Starter (business) removeBranding true', starterPlanMeta?.removeBranding === true, JSON.stringify(starterPlanMeta?.removeBranding));
+  ok('usage surfaces orderLimit + ordersThisMonth', typeof subGet.data?.usage?.orderLimit === 'number' && typeof subGet.data?.usage?.ordersThisMonth === 'number', JSON.stringify(subGet.data?.usage));
+  ok('trial history entry written', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, toStatus: 'trial' } }) >= 1, 'missing');
 
-  // 3. Product limit enforced from the plan
-  console.log('\n3. Product limit from plan (temp plan productLimit=3)');
-  const tempPlan = await createTempPlan(3, 2);
-  await prisma.subscription.update({ where: { businessId: bizAId }, data: { planId: (await prisma.subscriptionPlan.findUnique({ where: { name: tempPlan } })).id } });
-  for (let i = 1; i <= 3; i++) {
-    const r = await req('/api/products', 'POST', { name: `P9 Product ${i}`, price: 1000 + i }, authA);
-    ok(`product ${i} created`, r.status === 201, `status=${r.status} ${r.text}`);
-  }
-  const product4 = await req('/api/products', 'POST', { name: 'P9 Product 4', price: 4000 }, authA);
-  ok('4th product rejected 403', product4.status === 403, `status=${product4.status} ${product4.text}`);
-  ok('rejection mentions limit', product4.text.includes('Product limit reached'), product4.text);
+  // 3. Free activation — instant in-app downgrade (no Paystack call)
+  console.log('\n3. Instant Free-plan activation');
+  const freePost = await req('/api/subscription', 'POST', { planKey: FREE_PLAN, billingCycle: 'monthly' }, authA);
+  ok('POST free activation 200', freePost.status === 200, `status=${freePost.status} ${freePost.text}`);
+  ok('mode free_activation', freePost.data?.mode === 'free_activation', JSON.stringify(freePost.data));
+  const freePlanRow = await prisma.subscriptionPlan.findUnique({ where: { name: FREE_PLAN } });
+  const subFree = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
+  ok('status active on Free', subFree?.status === 'active', `status=${subFree?.status}`);
+  ok('downgraded to Free row', subFree?.planId === freePlanRow?.id, `planId=${subFree?.planId}`);
+  ok('Free history note recorded', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, note: { contains: 'free plan' } } }) >= 1, 'missing');
+  const subFreeGet = await req('/api/subscription', 'GET', undefined, authA);
+  ok('GET reflects Free plan', subFreeGet.data?.onFreePlan === true && subFreeGet.data?.planKey === FREE_PLAN && subFreeGet.data?.status === 'active', JSON.stringify(subFreeGet.data));
+  const homeFree = await req(`/${slugA}`, 'GET');
+  ok('storefront still live on Free (soft downgrade)', homeFree.status === 200, `status=${homeFree.status}`);
+  ok('storefront shows Powered by SHOPORA on Free', homeFree.text.includes('Powered by'), 'footer missing');
 
-  // 4. Staff seat limit via invite (temp plan staffLimit=2)
-  console.log('\n4. Staff seat limit');
-  const inv1 = await req('/api/staff', 'POST', { email: 'p9-staff1@shopora.dev', firstName: 'St', lastName: 'One' }, authA);
-  ok('staff 1 invited 201', inv1.status === 201, `status=${inv1.status} ${inv1.text}`);
-  ok('temporary password returned once', typeof inv1.data?.temporaryPassword === 'string' && inv1.data.temporaryPassword.length > 0, JSON.stringify(inv1.data?.temporaryPassword));
-  const invDup = await req('/api/staff', 'POST', { email: 'p9-staff1@shopora.dev', firstName: 'St', lastName: 'One' }, authA);
-  ok('duplicate staff 409', invDup.status === 409, `status=${invDup.status} ${invDup.text}`);
-  const inv2 = await req('/api/staff', 'POST', { email: 'p9-staff2@shopora.dev', firstName: 'St', lastName: 'Two' }, authA);
-  ok('staff 2 invited 201', inv2.status === 201, `status=${inv2.status} ${inv2.text}`);
-  const inv3 = await req('/api/staff', 'POST', { email: 'p9-staff3@shopora.dev', firstName: 'St', lastName: 'Three' }, authA);
-  ok('3rd staff rejected 403', inv3.status === 403, `status=${inv3.status} ${inv3.text}`);
-  ok('rejection mentions staff limit', inv3.text.includes('Staff limit reached'), inv3.text);
-
-  // 5. Calendar-driven flips driven by the STOREFRONT layout (second call site)
-  console.log('\n5. Storefront-driven status transitions');
-  const now = new Date();
-  const past = new Date(Date.now() - 86400_000 * 40);
-
-  const homeTrial = await req(`/${slugA}`, 'GET');
-  ok('storefront live during trial', homeTrial.status === 200, `status=${homeTrial.status}`);
-
-  // trial → past_due (grace): trialEndsAt in the past.
-  await prisma.subscription.update({ where: { businessId: bizAId }, data: { trialEndsAt: past, currentPeriodEnd: past } });
-  const homePastDue = await req(`/${slugA}`, 'GET');
-  ok('storefront still live (past_due grace)', homePastDue.status === 200, `status=${homePastDue.status}`);
-  const subAfterTrialEnd = await prisma.subscription.findUnique({ where: { businessId: bizAId }, select: { status: true } });
-  ok('trial flipped to past_due by storefront hit', subAfterTrialEnd?.status === 'past_due', subAfterTrialEnd?.status);
-
-  // past_due: checkout allowed.
-  const productA = await prisma.product.create({
-    data: { businessId: bizAId, name: 'P9 Cart Tee', price: 5000, status: 'active', stockQuantity: 10, slug: `p9-cart-tee-${Date.now()}` },
+  // 4. Order-limit (monthly) enforced at storefront checkout
+  console.log('\n4. Order limit from plan enforced at checkout');
+  const limitPlan = `p11-orderlimit-${Date.now()}`;
+  await createPlan(limitPlan, { productLimit: 20, staffLimit: 5, orderLimit: 2 });
+  const limitPlanRow = await prisma.subscriptionPlan.findUnique({ where: { name: limitPlan } });
+  await prisma.subscription.update({ where: { businessId: bizAId }, data: { planId: limitPlanRow.id, status: 'active', billingCycle: 'monthly' } });
+  const product = await prisma.product.create({
+    data: { businessId: bizAId, name: 'P11 Cart Tee', price: 5000, status: 'active', stockQuantity: 10, slug: `p11-cart-tee-${Date.now()}` },
   });
-  const addCart = await req(`/api/store/${slugA}/cart`, 'POST', { productId: productA.id, quantity: 1 });
-  ok('cart add during past_due 201', addCart.status === 201, `status=${addCart.status}`);
-  const guestCookie = cartCookie(addCart.setCookie);
-  const checkoutPastDue = await req(`/api/store/${slugA}/checkout`, 'POST', {
-    name: 'Ada P9', email: 'ada-p9@test.com', deliveryMethod: 'pickup', paymentMethod: 'bank_transfer',
-  }, { cookie: guestCookie });
-  ok('checkout allowed during past_due', checkoutPastDue.status === 201, `status=${checkoutPastDue.status} ${checkoutPastDue.text}`);
-  const checkoutOrderId = checkoutPastDue.data?.orderId;
-  await prisma.orderStatusHistory.deleteMany({ where: { orderId: checkoutOrderId } });
-  await prisma.orderItem.deleteMany({ where: { orderId: checkoutOrderId } });
-  await prisma.order.delete({ where: { id: checkoutOrderId } });
+  const addCart = await req(`/api/store/${slugA}/cart`, 'POST', { productId: product.id, quantity: 1 });
+  ok('cart add 201', addCart.status === 201, `status=${addCart.status}`);
+  let guestCookie = cartCookie(addCart.setCookie);
+  const checkoutBody = { name: 'Ada P11', email: 'ada-p11@test.com', deliveryMethod: 'pickup', paymentMethod: 'bank_transfer' };
+  // Checkout consumes the cart (it is emptied on order placement), so re-add
+  // the product to the same guest cart between each checkout attempt. The cart
+  // POST only emits Set-Cookie when it creates a NEW session (reusing an
+  // existing guest session returns none), so the exact same guestCookie
+  // reference is forwarded to both the re-add and the checkout calls — never
+  // refreshed from a Set-Cookie, which would wipe the session to "cart empty".
+  const reAddCart = async () => {
+    const r = await req(`/api/store/${slugA}/cart`, 'POST', { productId: product.id, quantity: 1 }, { cookie: guestCookie });
+    if (r.status !== 201) throw new Error(`cart re-add failed: ${r.status} ${r.text}`);
+  };
+  const c1 = await req(`/api/store/${slugA}/checkout`, 'POST', checkoutBody, { cookie: guestCookie });
+  ok('order 1 allowed (1/2)', c1.status === 201, `status=${c1.status} ${c1.text}`);
+  await reAddCart();
+  const c2 = await req(`/api/store/${slugA}/checkout`, 'POST', checkoutBody, { cookie: guestCookie });
+  ok('order 2 allowed (2/2)', c2.status === 201, `status=${c2.status} ${c2.text}`);
+  await reAddCart();
+  const c3 = await req(`/api/store/${slugA}/checkout`, 'POST', checkoutBody, { cookie: guestCookie });
+  ok('order 3 blocked 423 (limit hit)', c3.status === 423, `status=${c3.status} ${c3.text}`);
+  ok('423 mentions monthly limit', c3.text.includes('monthly limit'), c3.text);
+  const usageGet = await req('/api/subscription', 'GET', undefined, authA);
+  ok('usage ordersThisMonth reflects 2 orders', usageGet.data?.usage?.ordersThisMonth === 2, JSON.stringify(usageGet.data?.usage?.ordersThisMonth));
 
-  // past_due → suspended (grace over).
-  await prisma.subscription.update({ where: { businessId: bizAId }, data: { currentPeriodEnd: past } });
-  const homeSuspended = await req(`/${slugA}`, 'GET');
-  ok('storefront still viewable (suspended)', homeSuspended.status === 200, `status=${homeSuspended.status}`);
-  const subSuspended = await prisma.subscription.findUnique({ where: { businessId: bizAId }, select: { status: true } });
-  ok('flipped to suspended', subSuspended?.status === 'suspended', subSuspended?.status);
+  // 5. Native webhook lifecycle (forged payloads, platform-key verified, offline)
+  console.log('\n5. Native Paystack webhook lifecycle');
+  // Give the paid Starter row a real-looking plan code so events resolve
+  // offline (a real /plan create would use the live Paystack API).
+  await prisma.subscriptionPlan.update({ where: { name: STARTER_PLAN }, data: { paystackPlanCode: 'PLN_p11_biz' } });
 
-  const checkoutSuspended = await req(`/api/store/${slugA}/checkout`, 'POST', {
-    name: 'Ada P9', email: 'ada-p9@test.com', deliveryMethod: 'pickup', paymentMethod: 'bank_transfer',
-  }, { cookie: guestCookie });
-  ok('checkout blocked 423 when suspended', checkoutSuspended.status === 423, `status=${checkoutSuspended.status} ${checkoutSuspended.text}`);
-  await req(`/api/store/${slugA}/cart`, 'POST', { productId: productA.id, quantity: 1 }, { cookie: guestCookie });
-  const checkoutPageSusp = await req(`/${slugA}/checkout`, 'GET', undefined, { cookie: guestCookie });
-  ok('checkout page shows paused banner', checkoutPageSusp.status === 200 && (checkoutPageSusp.text.includes('not accepting orders') || checkoutPageSusp.text.includes('paused checkout')), `status=${checkoutPageSusp.status}`);
-
-  // suspended → cancelled (suspension over).
-  await prisma.subscription.update({ where: { businessId: bizAId }, data: { currentPeriodEnd: past } });
-  const homeCancelled = await req(`/${slugA}`, 'GET');
-  ok('storefront 404 when cancelled', homeCancelled.status === 404, `status=${homeCancelled.status}`);
-  const subCancelled = await prisma.subscription.findUnique({ where: { businessId: bizAId }, select: { status: true, cancelledAt: true } });
-  ok('flipped to cancelled', subCancelled?.status === 'cancelled', subCancelled?.status);
-  ok('cancelledAt stamped', !!subCancelled?.cancelledAt, 'missing cancelledAt');
-  const cancelPages = await req(`/${slugA}/products`, 'GET');
-  ok('product listing 404 when cancelled', cancelPages.status === 404, `status=${cancelPages.status}`);
-  const cancelCartReq = await req(`/api/store/${slugA}/cart`, 'POST', { productId: productA.id, quantity: 1 });
-  ok('cart add 404 when cancelled', cancelCartReq.status === 404, `status=${cancelCartReq.status}`);
-  const cancelCheckout = await req(`/api/store/${slugA}/checkout`, 'POST', { name: 'Ada', email: 'a@b.com', deliveryMethod: 'pickup' }, { cookie: guestCookie });
-  ok('checkout 404 when cancelled', cancelCheckout.status === 404, `status=${cancelCheckout.status}`);
-
-  // 6. Dashboard freeze when cancelled (read-only except subscription)
-  console.log('\n6. Dashboard read-only when cancelled');
-  const subRead = await req('/api/subscription', 'GET', undefined, authA);
-  ok('GET /api/subscription still works', subRead.status === 200, `status=${subRead.status}`);
-  ok('GET reports cancelled', subRead.data?.status === 'cancelled', JSON.stringify(subRead.data?.status));
-  const orderPatch = await req('/api/orders/fake-000/status', 'PATCH', { status: 'paid' }, authA);
-  ok('order status PATCH blocked 423', orderPatch.status === 423, `status=${orderPatch.status} ${orderPatch.text}`);
-  const prodCreate = await req('/api/products', 'POST', { name: 'Blocked', price: 1 }, authA);
-  ok('product create blocked 423', prodCreate.status === 423, `status=${prodCreate.status} ${prodCreate.text}`);
-  const staffInvite = await req('/api/staff', 'POST', { email: 'p9-staff4@shopora.dev', firstName: 'S', lastName: 'F' }, authA);
-  ok('staff invite blocked 423', staffInvite.status === 423, `status=${staffInvite.status} ${staffInvite.text}`);
-  const subCheckoutNoBody = await req('/api/subscription', 'POST', {}, authA);
-  ok('subscription checkout route exempt (400, not 423)', subCheckoutNoBody.status === 400, `status=${subCheckoutNoBody.status} ${subCheckoutNoBody.text}`);
-
-  // 7. Webhook activation (platform key) — reactivates a cancelled store
-  console.log('\n7. Subscription webhook activation');
-  const platformSecret = envValue('PAYSTACK_SECRET_KEY', 'sk_test_FAKE_PLATFORM_SUB_KEY_123456789');
-  const ref = `SP-SUB-webhook-${Date.now()}`;
-  await prisma.transaction.create({
-    data: {
-      businessId: bizAId,
-      orderId: null,
-      provider: 'paystack',
-      providerRef: ref,
-      amount: 15000,
-      status: 'initiated',
-      type: 'subscription',
-    },
+  const subCreate = await webhook('subscription.create', {
+    id: 1001,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA }, plan: { plan_code: 'PLN_p11_biz' } },
   });
-  const subPayload = JSON.stringify({
-    event: 'charge.success',
-    data: {
-      reference: ref,
-      amount: 15000 * 100,
-      customer: { customer_code: 'CUS_p9test' },
-      authorization: { authorization_code: 'AUTH_p9test_123' },
-    },
-  });
-  const goodSig = createHmac('sha512', platformSecret).update(subPayload).digest('hex');
-  const hook = await req('/api/webhooks/paystack', 'POST', subPayload, { 'x-paystack-signature': goodSig, 'Content-Type': 'text/plain' });
-  ok('subscription webhook 200', hook.status === 200, `status=${hook.status} ${hook.text}`);
+  ok('subscription.create handled 200', subCreate.status === 200 && subCreate.data?.handled === 'subscription.create', `status=${subCreate.status} ${subCreate.text}`);
   const subActive = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
-  ok('subscription reactivated → active', subActive?.status === 'active', subActive?.status);
-  ok('authorization code stored', subActive?.paystackAuthorizationCode === 'AUTH_p9test_123', JSON.stringify(subActive?.paystackAuthorizationCode));
-  ok('customer code stored', subActive?.paystackCustomerCode === 'CUS_p9test', JSON.stringify(subActive?.paystackCustomerCode));
-  ok('period extended past now', subActive && subActive.currentPeriodEnd > now, `currentPeriodEnd=${subActive?.currentPeriodEnd}`);
-  ok('txn flipped to success', await prisma.transaction.count({ where: { businessId: bizAId, providerRef: ref, status: 'success' } }) === 1, 'missing');
-  ok('active history entry written', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, toStatus: 'active' } }) >= 1, 'missing');
+  ok('subscription reactivated on paid plan', subActive?.status === 'active' && subActive?.planId === (await prisma.subscriptionPlan.findUnique({ where: { name: STARTER_PLAN } })).id, JSON.stringify(subActive));
+  ok('native subscription code linked', subActive?.paystackSubscriptionCode === 'SUB_p11_a', JSON.stringify(subActive?.paystackSubscriptionCode));
+  ok('trial cleared', subActive?.trialEndsAt === null, JSON.stringify(subActive?.trialEndsAt));
+  ok('period rolled ~30d', subActive && subActive.currentPeriodEnd.getTime() > Date.now() + 29 * 86400_000, `currentPeriodEnd=${subActive?.currentPeriodEnd}`);
+  const activeGet = await req('/api/subscription', 'GET', undefined, authA);
+  ok('GET reports hasNativeSubscription', activeGet.data?.hasNativeSubscription === true && activeGet.data?.onFreePlan === false, JSON.stringify(activeGet.data));
+  const homeBranded = await req(`/${slugA}`, 'GET');
+  ok('storefront hides Powered by SHOPORA on paid plan', !homeBranded.text.includes('Powered by'), 'branding visible');
 
-  const hookReplay = await req('/api/webhooks/paystack', 'POST', subPayload, { 'x-paystack-signature': goodSig, 'Content-Type': 'text/plain' });
-  ok('replay idempotent 200', hookReplay.status === 200, `status=${hookReplay.status}`);
-  ok('no duplicate active history', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, toStatus: 'active' } }) === 1, 'duplicate history');
+  const replay = await webhook('subscription.create', {
+    id: 1001,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA }, plan: { plan_code: 'PLN_p11_biz' } },
+  });
+  ok('ledger replay idempotent 200 (duplicate)', replay.status === 200 && replay.data?.duplicate === true, `status=${replay.status} ${replay.text}`);
+  ok('no duplicate activation history', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, note: { contains: 'Native Paystack subscription created' } } }) === 1, 'duplicate history');
 
-  const badSig = createHmac('sha512', 'wrong_secret').update(subPayload).digest('hex');
-  const hookBad = await req('/api/webhooks/paystack', 'POST', subPayload, { 'x-paystack-signature': badSig, 'Content-Type': 'text/plain' });
-  ok('bad signature rejected 403', hookBad.status === 403, `status=${hookBad.status}`);
+  const badSigBody = JSON.stringify({ event: 'subscription.create', data: { id: 1001, subscription: { subscription_code: 'SUB_p11_a', plan: { plan_code: 'PLN_p11_biz' } } } });
+  const bad = await req('/api/webhooks/paystack', 'POST', badSigBody, { 'x-paystack-signature': sign(badSigBody, 'wrong_secret'), 'Content-Type': 'text/plain' });
+  ok('bad platform signature rejected 403', bad.status === 403, `status=${bad.status}`);
 
-  const homeReactive = await req(`/${slugA}`, 'GET');
-  ok('storefront back online after reactivation', homeReactive.status === 200, `status=${homeReactive.status}`);
+  const payFail = await webhook('invoice.payment_failed', {
+    id: 1003,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA } },
+  });
+  ok('invoice.payment_failed handled 200', payFail.status === 200 && payFail.data?.handled === 'invoice.payment_failed', `status=${payFail.status} ${payFail.text}`);
+  const subDowngraded = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
+  ok('payment failure downgraded to Free', subDowngraded?.status === 'active' && subDowngraded?.planId === freePlanRow?.id, JSON.stringify(subDowngraded));
+  ok('native code cleared on downgrade', subDowngraded?.paystackSubscriptionCode === null, JSON.stringify(subDowngraded?.paystackSubscriptionCode));
+  ok('downgrade history note', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: bizAId }, note: { contains: 'Payment failed' } } }) >= 1, 'missing');
 
-  // 8. Tenant isolation + storefront-only provisioning (business B never hits the dashboard)
-  console.log('\n8. Tenant isolation + storefront-only provisioning');
+  const renewalRef = `SP-SUB-REN-${Date.now()}`;
+  const renewal = await webhook('charge.success', {
+    id: 1004,
+    reference: renewalRef,
+    amount: 10000 * 100,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA }, plan: { plan_code: 'PLN_p11_biz' } },
+  });
+  ok('renewal charge.success handled 200', renewal.status === 200 && renewal.data?.handled === 'charge.success.renewal', `status=${renewal.status} ${renewal.text}`);
+  const subRenewed = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
+  ok('renewal reactivated on paid plan', subRenewed?.status === 'active' && subRenewed?.planId === (await prisma.subscriptionPlan.findUnique({ where: { name: STARTER_PLAN } })).id, JSON.stringify(subRenewed));
+  ok('native code re-linked', subRenewed?.paystackSubscriptionCode === 'SUB_p11_a', JSON.stringify(subRenewed?.paystackSubscriptionCode));
+  ok('renewal transaction recorded once', await prisma.transaction.count({ where: { businessId: bizAId, providerRef: renewalRef, status: 'success' } }) === 1, 'missing txn');
+
+  const reDowngrade = await webhook('subscription.disable', {
+    id: 1005,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA } },
+  });
+  ok('subscription.disable handled 200', reDowngrade.status === 200 && reDowngrade.data?.handled === 'subscription.disable', `status=${reDowngrade.status} ${reDowngrade.text}`);
+  const subFinal = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
+  ok('disable downgraded to Free', subFinal?.status === 'active' && subFinal?.planId === freePlanRow?.id, JSON.stringify(subFinal));
+  const homeAgain = await req(`/${slugA}`, 'GET');
+  ok('Powered by SHOPORA back after downgrade', homeAgain.text.includes('Powered by'), 'footer missing');
+
+  const ignored = await webhook('subscription.enable', {
+    id: 1006,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA } },
+  });
+  ok('subscription.enable ack ignored (unchanged)', ignored.status === 200 && ignored.data?.handled === 'ignored', `status=${ignored.status} ${ignored.text}`);
+  const subStillFree = await prisma.subscription.findUnique({ where: { businessId: bizAId } });
+  ok('row unchanged after ignored event', subStillFree?.planId === freePlanRow?.id, JSON.stringify(subStillFree));
+
+  // 6. Paid checkout route — graceful offline degradation (no crash, no side effects)
+  console.log('\n6. Paid checkout without live Paystack');
+  if (FAKE_KEY) {
+    const paidPost = await req('/api/subscription', 'POST', { planKey: STARTER_PLAN, billingCycle: 'monthly' }, authA);
+    ok('paid checkout returns graceful 502 (fake key)', paidPost.status === 502, `status=${paidPost.status} ${paidPost.text}`);
+    ok('502 mentions Paystack', /[Pp]aystack/.test(paidPost.text), paidPost.text);
+    ok('no transaction row leaked on failure', await prisma.transaction.count({ where: { businessId: bizAId, type: 'subscription', status: 'initiated' } }) === 0, 'leaked txn');
+  } else {
+    const paidPost = await req('/api/subscription', 'POST', { planKey: STARTER_PLAN, billingCycle: 'monthly' }, authA);
+    ok('paid checkout proceeds with real key', paidPost.status === 201 && !!paidPost.data?.authorizationUrl, `status=${paidPost.status} ${paidPost.text}`);
+  }
+  const annual = await req('/api/subscription', 'POST', { planKey: STARTER_PLAN, billingCycle: 'annual' }, authA);
+  ok('annual rejected 400 (monthly only)', annual.status === 400, `status=${annual.status} ${annual.text}`);
+  const badPlan = await req('/api/subscription', 'POST', { planKey: 'premium', billingCycle: 'monthly' }, authA);
+  ok('free post on premium also intact while on Free', badPlan.status !== 500, `status=${badPlan.status}`);
+
+  // 7. Trial expiry → storefront-driven soft downgrade (business B)
+  console.log('\n7. Trial expiry downgrade on the storefront call site');
   const b = await register(EMAILS.ownerB, BUSINESS_NAME_B);
   ok('store B registered', b.status === 201, `status=${b.status}`);
   const doneB = await completeOnboarding(b.cookie);
   ok('onboarding B complete', doneB.ok, JSON.stringify(doneB));
   const slugB = doneB.slug;
-  const authB = { cookie: b.cookie };
   const businessB = await prisma.business.findUnique({ where: { slug: slugB }, select: { id: true } });
+  const trialB = await prisma.subscription.findUnique({ where: { businessId: businessB.id }, select: { status: true, trialEndsAt: true, businessId: true } });
+  ok('B provisioned a trial by storefront/dashboard', trialB?.status === 'trial', JSON.stringify(trialB));
+  ok('B subscription isolated', trialB?.businessId === businessB.id, JSON.stringify(trialB?.businessId));
+
+  const past = new Date(Date.now() - 86400_000 * 40);
+  await prisma.subscription.update({ where: { businessId: businessB.id }, data: { trialEndsAt: past, currentPeriodEnd: past } });
   const homeB = await req(`/${slugB}`, 'GET');
-  ok('storefront B live', homeB.status === 200, `status=${homeB.status}`);
-  const subRowB = await prisma.subscription.findUnique({ where: { businessId: businessB.id }, select: { status: true, businessId: true } });
-  ok('storefront hit provisioned B a trial', subRowB?.status === 'trial', JSON.stringify(subRowB));
-  ok('B has own subscription (isolated)', subRowB?.businessId === businessB.id, JSON.stringify(subRowB?.businessId));
-  const subGetB = await req('/api/subscription', 'GET', undefined, authB);
-  ok('B GET subscription = its own trial', subGetB.data?.status === 'trial' && subGetB.data?.planKey === 'starter', JSON.stringify(subGetB.data));
-  ok('A cannot see B through B session', subGetB.data?.usage !== undefined, 'missing usage');
+  ok('B storefront still live after trial expiry', homeB.status === 200, `status=${homeB.status}`);
+  const subB = await prisma.subscription.findUnique({ where: { businessId: businessB.id } });
+  ok('B trial downgraded to Free on touch', subB?.status === 'active' && subB?.planId === freePlanRow?.id, JSON.stringify(subB));
+  ok('B downgrade reason recorded', await prisma.subscriptionHistory.count({ where: { subscription: { businessId: businessB.id }, note: { contains: 'Free trial ended' } } }) >= 1, 'missing');
+  const subGetB = await req('/api/subscription', 'GET', undefined, { cookie: b.cookie });
+  ok('B GET sees Free plan', subGetB.data?.onFreePlan === true && subGetB.data?.planKey === FREE_PLAN, JSON.stringify(subGetB.data));
+  // §5's subscription.disable legitimately left business A on Free, so put A
+  // back on paid Starter before asserting isolation from what B's storefront
+  // touch did — same offline-forgeable subscription.create call pattern as §5
+  // (fresh event id 1007: ledger key (event, eventId) already consumed 1001).
+  const reProA = await webhook('subscription.create', {
+    id: 1007,
+    subscription: { subscription_code: 'SUB_p11_a', customer: { customer_code: 'CUS_p11_a', email: EMAILS.ownerA }, plan: { plan_code: 'PLN_p11_biz' } },
+  });
+  ok('A re-provisioned onto Starter before isolation check', reProA.status === 200 && reProA.data?.handled === 'subscription.create', `status=${reProA.status} ${reProA.text}`);
+  const subGetA2 = await req('/api/subscription', 'GET', undefined, authA);
+  ok('A unchanged and isolated', subGetA2.data?.planKey !== FREE_PLAN, JSON.stringify(subGetA2.data?.planKey));
+
+  // 8. Daily sweep parity: the cron endpoint downgrades the same maybe-overdue rows
+  console.log('\n8. Cron billing sweep');
+  const cron = await req(`/api/cron/billing?token=${encodeURIComponent(envValue('CRON_TOKEN', 'replace-with-a-long-random-token'))}`, 'GET');
+  ok('cron sweep 200', cron.status === 200, `status=${cron.status} ${cron.text}`);
+  ok('cron reports checked count', typeof cron.data?.checked === 'number' && typeof cron.data?.downgraded === 'number', JSON.stringify(cron.data));
+  const cronBad = await req('/api/cron/billing?token=wrong', 'GET');
+  ok('bad cron token rejected 401', cronBad.status === 401, `status=${cronBad.status}`);
 
   console.log(`\n${failed ? 'FAILED' : 'ALL PASSED'}`);
   process.exit(failed ? 1 : 0);

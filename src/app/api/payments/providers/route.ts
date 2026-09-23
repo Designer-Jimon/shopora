@@ -5,7 +5,7 @@
 
 import { NextRequest } from 'next/server';
 import { jsonOk, jsonError, jsonNoContent, authErrors } from '@/lib/http';
-import { requireAuth, requirePermission } from '@/lib/tenant';
+import { requirePermission } from '@/lib/tenant';
 import { requireAuthHandler } from '@/lib/withTenant';
 import prisma from '@/lib/prisma';
 import { saveProviderSecret, deleteProviderSecret } from '@/lib/payments/secret';

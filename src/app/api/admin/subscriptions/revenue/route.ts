@@ -3,7 +3,7 @@
 // i.e. the platform's own Paystack revenue) + current MRR snapshot.
 
 import { NextRequest } from 'next/server';
-import { jsonOk, authErrors } from '@/lib/http';
+import { jsonOk } from '@/lib/http';
 import { withAdminHandler } from '@/lib/admin';
 import prisma from '@/lib/prisma';
 
@@ -27,7 +27,6 @@ export const GET = withAdminHandler('platform.revenue.read', async (request: Nex
   const start = new Date();
   start.setUTCDate(1);
   start.setUTCMonth(start.getUTCMonth() - (months - 1));
-  const startKey = monthKey(start);
 
   const buckets = new Map<string, { month: string; grossNaira: number; count: number; successfulCount: number }>();
   for (let i = 0; i < months; i++) {

@@ -107,10 +107,12 @@ export class PaystackProvider implements PaymentProvider {
     try {
       const json = JSON.parse(rawBody) as { event?: unknown; data?: Record<string, unknown> };
       const event = String(json.event ?? '');
-      const data = json.data;
-      const providerRef = String((data as Record<string, unknown> | undefined)?.reference ?? '');
-      if (!event || !providerRef) return null;
-      return { event, providerRef, data: (data ?? {}) as Record<string, never> };
+      const data = (json.data ?? {}) as Record<string, unknown>;
+      if (!event) return null;
+      // `reference` is absent on subscription lifecycle events (subscription.*,
+      // invoice.*) — those are resolved by subscription/customer identifiers.
+      const providerRef = String(data.reference ?? '');
+      return { event, providerRef, data };
     } catch {
       return null;
     }

@@ -15,6 +15,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed-plans": "tsx prisma/seed-plans.ts",
     "db:seed-admin": "tsx prisma/seed-admin.ts",
+    "billing:daily": "tsx scripts/billing-daily.ts",
     "db:clean-test": "node scripts/clean-test-data.cjs",
     "test:core": "tsx scripts/verify-phase2.ts",
     "test:api": "node scripts/verify-http.mjs",
@@ -30,6 +31,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1138.0",
     "@prisma/client": "^5.19.0",
     "argon2": "^0.45.1",
     "jose": "^6.2.10",
@@ -42,6 +44,8 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
     "postcss": "^8.4.41",
     "prisma": "^5.19.0",
     "tailwindcss": "^3.4.10",

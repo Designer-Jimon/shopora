@@ -1,6 +1,7 @@
-// SHOPORA subscription plan seed — upserts the Starter/Business/Premium
-// catalogue (idempotent, mirrors ensurePlansSeeded in src/lib/subscriptions).
-// Run via: npm run db:seed-plans
+// SHOPORA subscription plan seed — upserts the Free/Starter/Growth catalogue
+// (idempotent, mirrors ensurePlansSeeded in src/lib/subscriptions). Rows keep
+// their stable Phase 9 keys ('starter'|'business'|'premium'); display and
+// prices were repurposed in Phase 11. Run via: npm run db:seed-plans
 
 import { PrismaClient } from '@prisma/client';
 import { SEED_PLANS } from '../src/lib/subscriptions/plans';

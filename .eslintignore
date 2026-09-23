@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+build
+public
+prisma
+scripts
+*.config.js
+*.config.ts
+next-env.d.ts

@@ -1,8 +1,8 @@
 // SHOPORA — /api/subscription/return
 //   GET — Paystack bounces the owner here after the hosted subscription
 //   checkout. We VERIFY server-side (never trust the redirect) and activate the
-//   subscription on success, then redirect the owner back to the Subscription
-//   page with a status query param.
+//   subscription on success, then redirect the owner back to the Billing page
+//   with a status query param.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { jsonError } from '@/lib/http';
@@ -12,6 +12,8 @@ import {
   verifySubscriptionTransaction,
 } from '@/lib/payments/subscription';
 import { resolveSession } from '@/lib/auth/session';
+
+const BILLING_PAGE = '/dashboard/billing';
 
 export const GET = async (request: NextRequest): Promise<Response> => {
   const reference = request.nextUrl.searchParams.get('reference');
@@ -27,7 +29,7 @@ export const GET = async (request: NextRequest): Promise<Response> => {
     select: { id: true, type: true },
   });
   if (!txn || txn.type !== 'subscription') {
-    return NextResponse.redirect(new URL('/subscription?status=failed', request.nextUrl.origin));
+    return NextResponse.redirect(new URL(`${BILLING_PAGE}?status=failed`, request.nextUrl.origin));
   }
 
   const verify = await verifySubscriptionTransaction(reference);
@@ -40,10 +42,10 @@ export const GET = async (request: NextRequest): Promise<Response> => {
       authorizationCode: data?.authorizationCode ?? null,
       customerCode: data?.customerCode ?? null,
     });
-    return NextResponse.redirect(new URL('/subscription?status=paid', request.nextUrl.origin));
+    return NextResponse.redirect(new URL(`${BILLING_PAGE}?status=paid`, request.nextUrl.origin));
   }
 
-  return NextResponse.redirect(new URL('/subscription?status=failed', request.nextUrl.origin));
+  return NextResponse.redirect(new URL(`${BILLING_PAGE}?status=failed`, request.nextUrl.origin));
 };
 
 // Paystack's verify endpoint response includes the authorization + customer;

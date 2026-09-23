@@ -13,7 +13,7 @@ export default function SetupBrandingPage() {
   const [description, setDescription] = useState('');
   const [phone, setPhone] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<'logo' | 'banner' | null>(null);
   const [error, setError] = useState<string | null>(null);

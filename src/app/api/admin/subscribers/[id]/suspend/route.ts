@@ -7,7 +7,7 @@
 // identically to a natural lapse.
 
 import { NextRequest } from 'next/server';
-import { jsonOk, jsonError, authErrors } from '@/lib/http';
+import { jsonOk, authErrors } from '@/lib/http';
 import { withAdminHandler } from '@/lib/admin';
 import { requireAuth } from '@/lib/tenant';
 import prisma from '@/lib/prisma';

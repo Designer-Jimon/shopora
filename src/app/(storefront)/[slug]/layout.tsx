@@ -145,17 +145,19 @@ export default async function StorefrontLayout({
               )}
               {biz.address && <p className="mt-1 text-sm text-[var(--sf-text)]">{biz.address}</p>}
             </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">
-                Powered by
-              </p>
-              <p className="mt-1 text-sm">
-                <Link href="/" className="font-semibold text-[var(--sf-primary)]">
-                  SHOPORA
-                </Link>{' '}
-                <span className="text-[var(--sf-muted)]">Build. Sell. Grow.</span>
-              </p>
-            </div>
+            {!subscriptionState.removeBranding && (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--sf-muted)]">
+                  Powered by
+                </p>
+                <p className="mt-1 text-sm">
+                  <Link href="/" className="font-semibold text-[var(--sf-primary)]">
+                    SHOPORA
+                  </Link>{' '}
+                  <span className="text-[var(--sf-muted)]">Build. Sell. Grow.</span>
+                </p>
+              </div>
+            )}
           </div>
         </footer>
       </div>

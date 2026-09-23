@@ -4,6 +4,7 @@
 // resolved from the URL slug, and only ever exposes status='active' rows.
 
 import prisma from '@/lib/prisma';
+import { cache } from 'react';
 import { resolveTheme, type BusinessTheme } from '@/lib/theme';
 import { serializeProduct, type SerializedProduct } from '@/lib/catalog';
 
@@ -27,45 +28,51 @@ const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
  * Resolve a tenant by its public slug. Returns null (→ notFound) when the slug
  * is malformed, the business does not exist, or it is not active. Theme is
  * merged over the code defaults via resolveTheme.
+ *
+ * Wrapped in React `cache()`: the storefront layout calls this from
+ * generateMetadata + generateViewport + the layout body in the SAME render
+ * pass, so dedupe turns 3 DB round-trips into 1.
  */
-export async function getStorefrontBusiness(slugRaw: string): Promise<StorefrontBusiness | null> {
-  const slug = slugRaw.trim().toLowerCase();
-  if (!SLUG_PATTERN.test(slug)) return null;
+export const getStorefrontBusiness = cache(
+  async (slugRaw: string): Promise<StorefrontBusiness | null> => {
+    const slug = slugRaw.trim().toLowerCase();
+    if (!SLUG_PATTERN.test(slug)) return null;
 
-  const biz = await prisma.business.findUnique({
-    where: { slug },
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-      description: true,
-      category: true,
-      phone: true,
-      whatsappNumber: true,
-      address: true,
-      logoUrl: true,
-      bannerUrl: true,
-      themeConfig: true,
-      isActive: true,
-    },
-  });
+    const biz = await prisma.business.findUnique({
+      where: { slug },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        description: true,
+        category: true,
+        phone: true,
+        whatsappNumber: true,
+        address: true,
+        logoUrl: true,
+        bannerUrl: true,
+        themeConfig: true,
+        isActive: true,
+      },
+    });
 
-  if (!biz || !biz.isActive) return null;
+    if (!biz || !biz.isActive) return null;
 
-  return {
-    id: biz.id,
-    name: biz.name,
-    slug: biz.slug,
-    description: biz.description,
-    category: biz.category,
-    phone: biz.phone,
-    whatsappNumber: biz.whatsappNumber,
-    address: biz.address,
-    logoUrl: biz.logoUrl,
-    bannerUrl: biz.bannerUrl,
-    theme: resolveTheme(biz.themeConfig),
-  };
-}
+    return {
+      id: biz.id,
+      name: biz.name,
+      slug: biz.slug,
+      description: biz.description,
+      category: biz.category,
+      phone: biz.phone,
+      whatsappNumber: biz.whatsappNumber,
+      address: biz.address,
+      logoUrl: biz.logoUrl,
+      bannerUrl: biz.bannerUrl,
+      theme: resolveTheme(biz.themeConfig),
+    };
+  },
+);
 
 const PRODUCT_INCLUDE = {
   category: { select: { id: true, name: true, slug: true } },

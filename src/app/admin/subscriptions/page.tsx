@@ -10,6 +10,7 @@ const STATUS_LABELS: Record<string, string> = {
   past_due: 'Past due',
   suspended: 'Suspended',
   cancelled: 'Cancelled',
+  downgraded: 'Downgraded',
 };
 const STATUS_STYLE: Record<string, string> = {
   active: 'bg-emerald-100 text-emerald-700',
@@ -24,15 +25,22 @@ const fmtNaira = (n: number) =>
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
+// Phase 11 — a "downgraded" subscription is one ACTIVE on the Free plan
+// (usually because the trial expired or a payment failed).
+const FREE_PLAN = 'starter';
+const DOWNGRADED = 'downgraded';
+
 export default async function SubscriptionsPage({ searchParams }: { searchParams: SearchParams }) {
   await requireAdminAccess();
   const sp = await searchParams;
   const status = String(sp.status ?? '').trim();
 
   const where: Record<string, unknown> = {};
-  if (status) where.status = status;
+  if (status === DOWNGRADED) where.status = 'active';
+  else if (status) where.status = status;
+  if (status === DOWNGRADED) where.plan = { name: FREE_PLAN };
 
-  const [subs, revenueSubs, planAgg] = await Promise.all([
+  const [subs, revenueSubs, planAgg, downgradedCount] = await Promise.all([
     prisma.subscription.findMany({
       where,
       include: {
@@ -50,10 +58,14 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
       },
     }),
     prisma.subscription.groupBy({ by: ['status'], _count: { _all: true } }),
+    prisma.subscription.count({
+      where: { status: 'active', plan: { name: FREE_PLAN } },
+    }),
   ]);
 
   const counts: Record<string, number> = {};
   for (const row of planAgg) counts[row.status] = row._count._all;
+  counts[DOWNGRADED] = downgradedCount;
 
   const mrr = revenueSubs.reduce((acc, s) => {
     const app = s.billingCycle === 'annual' ? Number(s.plan.annualPriceNaira) / 12 : Number(s.plan.monthlyPriceNaira);
@@ -100,10 +112,10 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
       </div>
 
       {status && (
-        <p className="mt-3 text-xs text-[var(--color-text-muted)]">
-          Showing {STATUS_LABELS[status] ?? status} subscriptions only.
-        </p>
-      )}
+          <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+            Showing {STATUS_LABELS[status] ?? status} subscriptions only.
+          </p>
+        )}
 
       <div className="mt-6 overflow-hidden rounded-xl border border-[var(--color-border)] bg-white">
         <table className="w-full text-left text-xs">
@@ -128,6 +140,11 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
                 </td>
                 <td className="px-4 py-2.5 font-semibold text-[var(--color-text)]">
                   {sub.plan.displayName}
+                  {sub.status === 'active' && sub.plan.name === FREE_PLAN && (
+                    <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700" title="Soft downgrade to Free (trial expired / payment failed)">
+                      Downgraded
+                    </span>
+                  )}
                   <p className="text-[var(--color-text-muted)]">{fmtNaira(Number(sub.billingCycle === 'annual' ? sub.plan.annualPriceNaira : sub.plan.monthlyPriceNaira))}/{sub.billingCycle === 'annual' ? 'yr' : 'mo'}</p>
                 </td>
                 <td className="px-4 py-2.5">

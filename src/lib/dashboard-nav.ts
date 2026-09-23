@@ -172,9 +172,9 @@ export const DASHBOARD_NAV: DashboardNavSection[] = [
     ],
   },
   {
-    label: 'Subscription',
-    href: '/subscription',
-    description: 'Plans and billing',
+    label: 'Billing',
+    href: '/dashboard/billing',
+    description: 'Plans, usage and recurring payments',
     permission: 'subscription.manage',
     children: [],
   },

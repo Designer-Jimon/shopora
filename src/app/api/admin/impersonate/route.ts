@@ -8,7 +8,7 @@
 //   Blocks:   impersonating a business that does not exist.
 
 import { NextRequest } from 'next/server';
-import { jsonOk, jsonError, authErrors } from '@/lib/http';
+import { jsonOk, authErrors } from '@/lib/http';
 import { withAdminHandler } from '@/lib/admin';
 import { requireAuth } from '@/lib/tenant';
 import prisma from '@/lib/prisma';

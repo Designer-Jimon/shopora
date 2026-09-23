@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.env
+.env.local
+.env.production
+.env.*.local
+public/uploads
+docs
+scripts
+prisma/seed*.ts
+prisma/dev.db
+*.log
+.DS_Store
+coverage
+.eslintcache

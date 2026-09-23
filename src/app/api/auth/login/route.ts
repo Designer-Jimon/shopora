@@ -12,9 +12,15 @@ import { jsonOk, authErrors } from '@/lib/http';
 import { validateEmail } from '@/lib/validate';
 import { verifyPassword } from '@/lib/auth/password';
 import { setSessionCookies, issueTokenPair } from '@/lib/auth/session';
+import { rateLimitKey, consumeRateLimit } from '@/lib/rate-limit';
 import type { PlatformRole } from '@/lib/auth/jwt';
 
+const LOGIN_LIMIT = 30; // attempts per IP per minute (tight enough to stop brute-force, loose enough for a workspace)
+
 export async function POST(request: NextRequest) {
+  const remaining = consumeRateLimit(rateLimitKey(request, 'login'), LOGIN_LIMIT);
+  if (remaining <= 0) return authErrors.tooMany();
+
   let body: Record<string, unknown>;
   try { body = await request.json(); }
   catch { return authErrors.badRequest('Invalid JSON body'); }

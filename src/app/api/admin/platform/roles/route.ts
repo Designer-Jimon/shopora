@@ -2,7 +2,6 @@
 // List platform roles + their permissions (read-only; drives the admins page).
 // Permission: platform.admins.manage.
 
-import type { NextRequest } from 'next/server';
 import { jsonOk } from '@/lib/http';
 import { withAdminHandler } from '@/lib/admin';
 import prisma from '@/lib/prisma';

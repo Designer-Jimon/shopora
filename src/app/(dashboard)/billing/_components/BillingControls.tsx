@@ -4,34 +4,36 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatNaira } from '@/lib/subscriptions/plans';
 
-export type SubscriptionPlanSummary = {
+export type BillingPlanSummary = {
   key: string;
   displayName: string;
   description: string;
   monthlyPriceNaira: number;
-  annualPriceNaira: number;
   productLimit: number;
   staffLimit: number;
+  orderLimit: number;
   customDomain: boolean;
+  removeBranding: boolean;
   analyticsTier: string;
 };
 
 type Props = {
   currentPlanKey: string;
   status: string;
-  billingCycle: 'monthly' | 'annual';
-  plans: SubscriptionPlanSummary[];
+  onFreePlan: boolean;
+  plans: BillingPlanSummary[];
 };
 
-export default function SubscriptionControls({ currentPlanKey, status, billingCycle, plans }: Props) {
+const limit = (n: number) => (n >= 999999 ? 'Unlimited' : n);
+
+export default function BillingControls({ currentPlanKey, status, onFreePlan, plans }: Props) {
   const router = useRouter();
   const [selectedPlan, setSelectedPlan] = useState(currentPlanKey);
-  const [cycle, setCycle] = useState<'monthly' | 'annual'>(billingCycle);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const paying = status === 'active' || status === 'past_due' || status === 'suspended';
+  const alreadyOnPlan = selectedPlan === currentPlanKey && status === 'active';
 
   async function goToCheckout() {
     setBusy(true);
@@ -41,7 +43,7 @@ export default function SubscriptionControls({ currentPlanKey, status, billingCy
       const res = await fetch('/api/subscription', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planKey: selectedPlan, billingCycle: cycle }),
+        body: JSON.stringify({ planKey: selectedPlan, billingCycle: 'monthly' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -52,8 +54,13 @@ export default function SubscriptionControls({ currentPlanKey, status, billingCy
         window.location.href = data.authorizationUrl;
         return;
       }
-      if (data?.mode === 'renewal_charge') {
-        setNotice('Payment started — your subscription will activate once Paystack confirms it.');
+      if (data?.mode === 'free_activation') {
+        setNotice(data?.message ?? 'Done — you are now on the Free plan.');
+        router.refresh();
+        return;
+      }
+      if (data?.mode === 'current_plan') {
+        setNotice('You are already on this plan.');
         router.refresh();
         return;
       }
@@ -65,30 +72,18 @@ export default function SubscriptionControls({ currentPlanKey, status, billingCy
     }
   }
 
-  const alreadyOnPlan = selectedPlan === currentPlanKey && status === 'active';
-
   return (
     <div>
       <div className="flex items-center gap-2">
         <span className="text-sm font-semibold text-[var(--color-text-muted)]">Billing cycle</span>
-        <div className="inline-flex rounded-lg border border-[var(--color-border)] bg-white p-0.5 text-xs font-semibold">
-          {(['monthly', 'annual'] as const).map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setCycle(c)}
-              className={`rounded-md px-3 py-1.5 transition ${cycle === c ? 'text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
-              style={cycle === c ? { background: 'var(--color-primary)' } : undefined}
-            >
-              {c === 'monthly' ? 'Monthly' : 'Annual (2 months free)'}
-            </button>
-          ))}
-        </div>
+        <span className="rounded-lg border border-[var(--color-border)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--color-text)]">
+          Monthly
+        </span>
+        <span className="text-xs text-[var(--color-text-muted)]">recurring via Paystack — no annual commitment</span>
       </div>
 
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
         {plans.map((plan) => {
-          const price = cycle === 'monthly' ? plan.monthlyPriceNaira : plan.annualPriceNaira;
           const isCurrent = plan.key === currentPlanKey && status === 'active';
           return (
             <button
@@ -108,13 +103,15 @@ export default function SubscriptionControls({ currentPlanKey, status, billingCy
               </div>
               <p className="mt-1 text-xs text-[var(--color-text-muted)]">{plan.description}</p>
               <p className="mt-3 text-2xl font-black text-[var(--color-text)]">
-                {formatNaira(price)}
-                <span className="text-sm font-semibold text-[var(--color-text-muted)]">/{cycle === 'monthly' ? 'mo' : 'yr'}</span>
+                {formatNaira(plan.monthlyPriceNaira)}
+                <span className="text-sm font-semibold text-[var(--color-text-muted)]">/mo</span>
               </p>
               <ul className="mt-4 space-y-1.5 text-xs text-[var(--color-text-muted)]">
-                <li>· Up to {plan.productLimit} products</li>
-                <li>· Up to {plan.staffLimit} staff members</li>
+                <li>· Up to {limit(plan.productLimit)} products</li>
+                <li>· Up to {limit(plan.staffLimit)} staff members</li>
+                <li>· Up to {limit(plan.orderLimit)} orders/month</li>
                 <li>· {plan.customDomain ? 'Custom domain support' : 'shopora.store subdomain'}</li>
+                {plan.removeBranding ? <li>· Removes the “Powered by SHOPORA” mark</li> : null}
                 <li>· {plan.analyticsTier === 'advanced' ? 'Advanced analytics' : 'Basic analytics'}</li>
               </ul>
             </button>
@@ -137,10 +134,20 @@ export default function SubscriptionControls({ currentPlanKey, status, billingCy
           className="rounded-lg px-5 py-2.5 text-sm font-bold text-white transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
           style={{ background: 'var(--color-primary)' }}
         >
-          {busy ? 'Working…' : paying ? (alreadyOnPlan ? 'Current plan' : 'Switch to this plan') : 'Activate with this plan'}
+          {busy
+            ? 'Working…'
+            : alreadyOnPlan
+              ? 'Current plan'
+              : selectedPlan === currentPlanKey && status === 'trial'
+                ? 'Activate this plan'
+                : selectedPlan === 'starter'
+                  ? 'Move to Free plan'
+                  : 'Switch to this plan'}
         </button>
         <span className="text-xs text-[var(--color-text-muted)]">
-          Payment is handled securely by Paystack.
+          {onFreePlan
+            ? 'Instant activation — no card needed.'
+            : 'Payment is handled securely by Paystack.'}
         </span>
       </div>
     </div>

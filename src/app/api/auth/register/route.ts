@@ -4,14 +4,20 @@
 
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
-import { jsonCreated, authErrors, jsonValidationErrors, jsonError } from '@/lib/http';
+import { jsonCreated, authErrors, jsonValidationErrors } from '@/lib/http';
 import { validateEmail, validatePassword, validateRequired, validateSlug, slugify } from '@/lib/validate';
 import { hashPassword } from '@/lib/auth/password';
 import { setSessionCookies, issueTokenPair } from '@/lib/auth/session';
+import { rateLimitKey, consumeRateLimit } from '@/lib/rate-limit';
 
 type RegisterKind = 'business' | 'customer';
 
+const REGISTER_LIMIT = 20; // accounts per IP per minute
+
 export async function POST(request: NextRequest) {
+  const remaining = consumeRateLimit(rateLimitKey(request, 'register'), REGISTER_LIMIT);
+  if (remaining <= 0) return authErrors.tooMany();
+
   let body: Record<string, unknown>;
   try { body = await request.json(); }
   catch { return authErrors.badRequest('Invalid JSON body'); }
@@ -75,10 +81,9 @@ export async function POST(request: NextRequest) {
 
     if (registerKind === 'business') {
       // Generate slug: use provided slug, or auto-generate from business name
-      let slug = businessSlug
+      const slug = businessSlug
         ? (businessSlug as string).trim().toLowerCase()
         : slugify(businessName as string);
-
       // Ensure unique slug — append suffix if taken
       let slugAttempt = slug;
       let counter = 2;

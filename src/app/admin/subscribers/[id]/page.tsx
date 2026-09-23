@@ -16,6 +16,7 @@ const STATUS_LABELS: Record<string, string> = {
   past_due: 'Past due',
   suspended: 'Suspended',
   cancelled: 'Cancelled',
+  downgraded: 'Downgraded',
   none: 'No plan',
 };
 
@@ -25,6 +26,7 @@ const STATUS_STYLE: Record<string, string> = {
   past_due: 'bg-orange-100 text-orange-700',
   suspended: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
+  downgraded: 'bg-amber-100 text-amber-700',
   none: 'bg-gray-100 text-gray-500',
 };
 
@@ -76,6 +78,11 @@ export default async function SubscriberDetailPage({ params }: { params: Promise
             >
               {STATUS_LABELS[st] ?? 'No plan'}
             </span>
+            {subscription?.status === 'active' && subscription?.plan.name === 'starter' && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                Downgraded to Free — trial expired / payment failed
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">

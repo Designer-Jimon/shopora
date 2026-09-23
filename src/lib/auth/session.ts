@@ -2,7 +2,6 @@
 // Interim: stateless JWT. A later phase replaces this with a Redis-backed
 // session store for instant revocation.
 
-import { cookies } from 'next/headers';
 import { type NextRequest, NextResponse } from 'next/server';
 import {
   type AccessTokenClaims,
@@ -10,7 +9,6 @@ import {
   signAccessToken,
   signRefreshToken,
   verifyAccessToken,
-  verifyRefreshToken,
 } from './jwt';
 
 // ------------------------------------------------------------------

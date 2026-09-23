@@ -27,9 +27,12 @@ export const GET = withAdminHandler('platform.plans.manage', async (_req, ctx) =
       annualPriceNaira: Number(plan.annualPriceNaira),
       productLimit: plan.productLimit,
       staffLimit: plan.staffLimit,
+      orderLimit: plan.orderLimit,
       customDomain: plan.customDomain,
+      removeBranding: plan.removeBranding,
       analyticsTier: plan.analyticsTier,
       isActive: plan.isActive,
+      paystackPlanCode: plan.paystackPlanCode,
       sortOrder: plan.sortOrder,
       subscriberCount: plan._count.subscriptions,
     },
@@ -55,13 +58,14 @@ export const PATCH = withAdminHandler('platform.plans.manage', async (request: N
     if (!Number.isFinite(v) || v < 0) return jsonError('Prices must be non-negative numbers', 422);
     data[key] = v;
   }
-  for (const [key, raw] of [['productLimit', body.productLimit], ['staffLimit', body.staffLimit], ['sortOrder', body.sortOrder]] as const) {
+  for (const [key, raw] of [['productLimit', body.productLimit], ['staffLimit', body.staffLimit], ['orderLimit', body.orderLimit], ['sortOrder', body.sortOrder]] as const) {
     if (raw === undefined) continue;
     const v = Number(raw);
     if (!Number.isInteger(v) || v < 0) return jsonError(`${key} must be a non-negative integer`, 422);
     data[key] = v;
   }
   if (body.customDomain !== undefined) data.customDomain = body.customDomain === true || body.customDomain === 'true';
+  if (body.removeBranding !== undefined) data.removeBranding = body.removeBranding === true || body.removeBranding === 'true';
   if (body.analyticsTier !== undefined) {
     if (!['basic', 'advanced'].includes(String(body.analyticsTier))) return jsonError('analyticsTier must be basic or advanced', 422);
     data.analyticsTier = String(body.analyticsTier);

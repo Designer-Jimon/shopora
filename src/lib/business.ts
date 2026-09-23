@@ -3,7 +3,7 @@
 
 import { requireAuth } from '@/lib/tenant';
 import prisma from '@/lib/prisma';
-import { AuthRequiredError, ForbiddenError } from '@/lib/tenant';
+import { ForbiddenError } from '@/lib/tenant';
 
 export const ONBOARDING_DONE = 99; // sentinel value marking onboarding complete
 

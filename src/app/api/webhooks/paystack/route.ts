@@ -1,31 +1,72 @@
 // SHOPORA — /api/webhooks/paystack
-//   POST — Paystack sends charge.success / charge.failed here.
-//   Public (no session) but guarded by HMAC-SHA512 signature of the RAW body
-//   (x-paystack-signature) vs the business's stored Paystack secret for order
-//   payments, or vs the PLATFORM Paystack secret (env PAYSTACK_SECRET_KEY) for
-//   subscription payments (SP-SUB-* references, Transaction.orderId = null).
-//   Idempotent: (provider, providerRef) is unique on Transaction and both the
-//   order and subscription success paths are guarded, so replays are safe.
+//   POST — Paystack webhooks cover BOTH billing surfaces:
+//
+//   A) ORDER payments on a store's OWN connected Paystack account. Verified
+//      against the store's stored secret; charge.success settles the order.
+//   B) SUBSCRIPTION billing on the PLATFORM account (native Paystack
+//      Subscriptions, Phase 11). Verified against the platform key
+//      (PAYSTACK_SECRET_KEY, with an optional PAYSTACK_WEBHOOK_SECRET
+//      fallback). subscription.create / invoice.payment_failed /
+//      subscription.disable / charge.success drive the Subscription row.
+//
+//   Idempotency: the WebhookEvent ledger keyed (event, eventId) drops any
+//   replay BEFORE it touches state, and the subscription/order apply paths
+//   additionally guard on (provider, providerRef). Uses the RAW body for HMAC
+//   (x-paystack-signature) exactly as Paystack signs it.
+//
+//   Unknown references + valid signature acknowledge (200) so Paystack stops
+//   retrying; malformed/signature failures bounce with 4xx.
 
 import { NextRequest } from 'next/server';
 import { jsonOk, jsonError } from '@/lib/http';
 import prisma from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
 import { PaystackProvider } from '@/lib/payments/paystack';
 import { getProviderSecret } from '@/lib/payments/secret';
 import { recordGatewayPaymentSuccess } from '@/lib/payments/orders';
-import {
-  applySubscriptionPaymentSuccess,
-  getPlatformPaystackSecret,
-  isSubscriptionRef,
-} from '@/lib/payments/subscription';
+import { isSubscriptionRef } from '@/lib/payments/subscription';
 import { PAYMENT_PROVIDERS } from '@/lib/payments/types';
+import {
+  handleNativeWebhook,
+  isNativeSubscriptionEvent,
+  verifyPlatformWebhook,
+} from '@/lib/subscriptions/webhooks';
 
-const provider = new PaystackProvider(null); // secret fetched per-flavor below
+const provider = new PaystackProvider(null);
 
-const camel = (data: Record<string, unknown> | undefined, key: string): string | null => {
-  const v = data?.[key];
-  return typeof v === 'string' && v ? v : null;
-};
+type LedgerResult = { received: true; handled?: string; duplicate?: boolean };
+
+/** Wrap processing in the (event, eventId) ledger: replay → ack duplicate;
+ * transient failure → roll the ledger row back and 500 so Paystack retries. */
+async function ackWithLedger(
+  event: string,
+  eventId: string,
+  processFn: () => Promise<{ handled: string }>,
+): Promise<Response> {
+  if (!eventId) {
+    const result = await processFn().catch(() => ({ handled: 'error' }));
+    return jsonOk({ received: true, handled: result.handled });
+  }
+
+  try {
+    await prisma.webhookEvent.create({ data: { event, eventId, provider: 'paystack' } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      return jsonOk({ received: true, duplicate: true } satisfies LedgerResult);
+    }
+    return jsonError('Webhook processing failed', 500);
+  }
+
+  try {
+    const result = await processFn();
+    return jsonOk({ received: true, handled: result.handled } satisfies LedgerResult);
+  } catch {
+    await prisma.webhookEvent
+      .deleteMany({ where: { event, eventId } })
+      .catch(() => undefined);
+    return jsonError('Webhook processing failed', 500);
+  }
+}
 
 export const POST = async (request: NextRequest): Promise<Response> => {
   const rawBody = await request.text().catch(() => '');
@@ -35,56 +76,57 @@ export const POST = async (request: NextRequest): Promise<Response> => {
   if (!parsed) return jsonError('Malformed Paystack webhook payload', 400);
   if (!signature) return jsonError('Missing x-paystack-signature header', 403);
 
-  // Identify the owning business via the referenced transaction.
-  const txn = await prisma.transaction.findFirst({
-    where: { provider: PAYMENT_PROVIDERS.paystack, providerRef: parsed.providerRef },
-    select: { businessId: true, orderId: true, type: true },
-  });
+  const { event, providerRef, data } = parsed;
+  const eventId = String(data?.id ?? '');
 
-  // Unknown/uninitiated reference — acknowledge (Paystack retries otherwise).
-  if (!txn) return jsonOk({ received: true, handled: 'unknown_reference' });
+  // Resolve a pre-recorded transaction by reference (order charges + the
+  // initial charge of a native subscription, which we pre-record at checkout).
+  const txn = providerRef
+    ? await prisma.transaction.findFirst({
+        where: { provider: PAYMENT_PROVIDERS.paystack, providerRef },
+        select: { businessId: true, orderId: true, type: true },
+      })
+    : null;
 
-  // Subscription payments are collected on the PLATFORM's Paystack account, so
-  // their signature verifies against the platform key, not the store's key.
-  if (txn.type === 'subscription' || isSubscriptionRef(parsed.providerRef)) {
-    const secret = getPlatformPaystackSecret();
-    if (!secret || !provider.verifyWebhookSignature(rawBody, signature, secret)) {
+  // Platform native-subscription billing?
+  const native =
+    isNativeSubscriptionEvent(event, data) ||
+    txn?.type === 'subscription' ||
+    isSubscriptionRef(providerRef);
+
+  if (native) {
+    if (!verifyPlatformWebhook(rawBody, signature)) {
       return jsonError('Invalid Paystack webhook signature', 403);
     }
-    if (parsed.event === 'charge.success') {
-      const amountKobo = Number(parsed.data?.amount ?? 0);
-      const auth = parsed.data?.authorization as Record<string, unknown> | undefined;
-      const customer = parsed.data?.customer as Record<string, unknown> | undefined;
-      await applySubscriptionPaymentSuccess({
-        businessId: txn.businessId,
-        providerRef: parsed.providerRef,
-        amount: Number.isFinite(amountKobo) ? amountKobo / 100 : 0,
-        authorizationCode: camel(auth, 'authorization_code'),
-        customerCode: camel(customer, 'customer_code'),
-      });
-    }
-    return jsonOk({ received: true });
+    return ackWithLedger(event, eventId, () =>
+      handleNativeWebhook(event, data, {
+        providerRef,
+        preRecordedTxn: txn ? { businessId: txn.businessId, type: txn.type } : null,
+      }),
+    );
   }
 
-  if (!txn.orderId) return jsonOk({ received: true, handled: 'unknown_reference' });
-
+  // ORDER payments — the store's own connected Paystack account.
+  if (!txn || !txn.orderId) {
+    return jsonOk({ received: true, handled: 'unknown_reference' });
+  }
   const secret = await getProviderSecret(txn.businessId, PAYMENT_PROVIDERS.paystack);
   if (!secret || !provider.verifyWebhookSignature(rawBody, signature, secret)) {
     return jsonError('Invalid Paystack webhook signature', 403);
   }
 
-  if (parsed.event === 'charge.success') {
-    const amountKobo = Number(parsed.data?.amount ?? 0);
+  if (event === 'charge.success') {
+    const amountKobo = Number(data?.amount ?? 0);
     await recordGatewayPaymentSuccess({
       businessId: txn.businessId,
       orderId: txn.orderId,
       provider: PAYMENT_PROVIDERS.paystack,
-      providerRef: parsed.providerRef,
+      providerRef,
       amount: Number.isFinite(amountKobo) ? amountKobo / 100 : 0,
     });
   }
-  // charge.failed / abandoned: leave the initiated transaction to be cleaned
-  // up by the return-route verification; no order flip needed.
+  // charge.failed / abandoned: left for the return-route verification; no
+  // order flip needed.
 
   return jsonOk({ received: true });
 };

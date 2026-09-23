@@ -10,8 +10,14 @@ import { NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
 import { jsonOk, authErrors } from '@/lib/http';
 import { generateResetToken, hashResetToken } from '@/lib/auth/password';
+import { rateLimitKey, consumeRateLimit } from '@/lib/rate-limit';
+
+const FORGOT_LIMIT = 5; // reset-email requests per IP per minute
 
 export async function POST(request: NextRequest) {
+  const remaining = consumeRateLimit(rateLimitKey(request, 'forgot-password'), FORGOT_LIMIT);
+  if (remaining <= 0) return authErrors.tooMany();
+
   let body: Record<string, unknown>;
   try { body = await request.json(); }
   catch { return authErrors.badRequest('Invalid JSON body'); }

@@ -14,7 +14,17 @@ function useActionState() {
   return { busy, setBusy, error, setError, notice, setNotice };
 }
 
-async function postJson(url: string, body: unknown): Promise<{ ok: boolean; data: any; status: number }> {
+type ApiResult = { ok: boolean; status: number; data: unknown };
+
+function getApiMessage(data: unknown, fallback: string): string {
+  if (data && typeof data === 'object') {
+    const err = (data as { error?: unknown }).error;
+    if (typeof err === 'string' && err) return err;
+  }
+  return fallback;
+}
+
+async function postJson(url: string, body: unknown): Promise<ApiResult> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -24,7 +34,7 @@ async function postJson(url: string, body: unknown): Promise<{ ok: boolean; data
   return { ok: res.ok, data, status: res.status };
 }
 
-async function sendJson(method: 'PATCH' | 'DELETE' | 'PUT', url: string, body?: unknown): Promise<{ ok: boolean; data: any; status: number }> {
+async function sendJson(method: 'PATCH' | 'DELETE' | 'PUT', url: string, body?: unknown): Promise<ApiResult> {
   const res = await fetch(url, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -62,7 +72,7 @@ export function ImpersonateButton({ businessId, businessName }: { businessId: st
     s.setBusy(true); s.setError(null);
     try {
       const r = await postJson('/api/admin/impersonate', { businessId });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Failed to start impersonation'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Failed to start impersonation')); return; }
       window.location.href = '/dashboard';
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
@@ -87,7 +97,7 @@ export function SuspendReactivateButton({ businessId, status }: { businessId: st
     try {
       const url = `/api/admin/subscribers/${businessId}/${isSuspended ? 'reactivate' : 'suspend'}`;
       const r = await postJson(url, {});
-      if (!r.ok) { s.setError(r.data?.error ?? 'Action failed'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Action failed')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -124,7 +134,7 @@ export function PlanCreateForm({ onDone }: { onDone?: () => void }) {
         productLimit: Number(f.productLimit), staffLimit: Number(f.staffLimit),
         customDomain: f.customDomain, analyticsTier: f.analyticsTier, sortOrder: Number(f.sortOrder),
       });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not create plan'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not create plan')); return; }
       s.setNotice('Plan created');
       setF({ ...f, name: '', displayName: '', description: '' });
       router.refresh();
@@ -204,7 +214,7 @@ export function PlanArchiveButton({ id, name, subscriberCount, disabled }: { id:
     s.setBusy(true); s.setError(null);
     try {
       const r = await sendJson('DELETE', `/api/admin/subscriptions/plans/${id}`);
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not archive plan'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not archive plan')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -231,7 +241,7 @@ export function TicketCreateForm() {
         subject: f.subject, body: f.body, priority: f.priority,
         businessId: f.businessId.trim() || undefined,
       });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not file ticket'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not file ticket')); return; }
       s.setNotice('Ticket filed');
       setF({ subject: '', body: '', priority: 'normal', businessId: '' });
       router.refresh();
@@ -282,7 +292,7 @@ export function TicketActionRow({ id }: { id: string }) {
     s.setBusy(true); s.setError(null);
     try {
       const r = await sendJson('PATCH', `/api/admin/tickets/${id}`, { [field]: value || null });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Update failed'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Update failed')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -322,7 +332,7 @@ export function CouponCreateForm() {
         maxUses: f.maxUses ? Number(f.maxUses) : undefined,
         startsAt: f.startsAt || undefined, expiresAt: f.expiresAt || undefined,
       });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not create coupon'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not create coupon')); return; }
       s.setNotice('Coupon created');
       setF({ code: '', kind: 'percentage', value: '', minOrderAmount: '', startsAt: '', expiresAt: '', maxUses: '' });
       router.refresh();
@@ -382,7 +392,7 @@ export function CouponToggleChip({ id, code, isActive }: { id: string; code: str
     s.setBusy(true); s.setError(null);
     try {
       const r = await sendJson('PATCH', `/api/admin/coupons/${id}`, { isActive: !isActive });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Update failed'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Update failed')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -407,8 +417,9 @@ export function AdminGrantForm({ roles }: { roles: { id: string; name: string }[
     e.preventDefault(); s.setBusy(true); s.setError(null); s.setNotice(null);
     try {
       const r = await postJson('/api/admin/platform/admins', f);
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not grant admin access'); return; }
-      s.setNotice(`${r.data?.email} is now a platform admin (${r.data?.roleName})`);
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not grant admin access')); return; }
+      const granted = r.data as { email?: string; roleName?: string } | null;
+      s.setNotice(`${granted?.email} is now a platform admin (${granted?.roleName})`);
       setF({ email: '', roleId: f.roleId, firstName: '', lastName: '' });
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
@@ -459,7 +470,7 @@ export function AdminRowActions({ id, isActive, userIsActive, self, lastSuper, r
     s.setBusy(true); s.setError(null);
     try {
       const r = await sendJson('PATCH', `/api/admin/platform/admins/${id}`, body);
-      if (!r.ok) { s.setError(r.data?.error ?? 'Update failed'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Update failed')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -468,7 +479,7 @@ export function AdminRowActions({ id, isActive, userIsActive, self, lastSuper, r
     s.setBusy(true); s.setError(null);
     try {
       const r = await sendJson('DELETE', `/api/admin/platform/admins/${id}`);
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not remove'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not remove')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -523,7 +534,7 @@ export function SettingForm() {
     catch { s.setError('value must be valid JSON (e.g. "true", "5", "{\\"a\\":1}")'); s.setBusy(false); return; }
     try {
       const r = await sendJson('PUT', '/api/admin/settings', { key: f.key, value: parsed, description: f.description || undefined });
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not save setting'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not save setting')); return; }
       s.setNotice(`Saved ${f.key}`);
       setF({ key: '', value: '', description: '' });
       router.refresh();
@@ -566,7 +577,7 @@ export function SettingRow({ settingKey, value, updatedAt }: { settingKey: strin
     s.setBusy(true); s.setError(null);
     try {
       const r = await sendJson('DELETE', `/api/admin/settings/${encodeURIComponent(settingKey)}`);
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not delete'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not delete')); return; }
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -589,13 +600,12 @@ export function SettingRow({ settingKey, value, updatedAt }: { settingKey: strin
 // ── Impersonation —─────────────────────────────────────────────────────────
 
 export function EndImpersonationButton({ compact = true }: { compact?: boolean }) {
-  const router = useRouter();
   const s = useActionState();
   async function end() {
     s.setBusy(true); s.setError(null);
     try {
       const r = await postJson('/api/admin/impersonate/end', {});
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not end impersonation'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not end impersonation')); return; }
       window.location.href = '/admin';
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }
   }
@@ -628,7 +638,7 @@ export function LogoutButton({ compact = false, className }: { compact?: boolean
     s.setBusy(true); s.setError(null);
     try {
       const r = await postJson('/api/auth/logout', {});
-      if (!r.ok) { s.setError(r.data?.error ?? 'Could not sign out'); return; }
+      if (!r.ok) { s.setError(getApiMessage(r.data, 'Could not sign out')); return; }
       router.push('/login');
       router.refresh();
     } catch { s.setError('Network error'); } finally { s.setBusy(false); }

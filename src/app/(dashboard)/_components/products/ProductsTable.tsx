@@ -50,7 +50,7 @@ function stockIndicator(effectiveStock: number, lowStock: boolean) {
   return <span className="text-xs text-[var(--color-text-muted)]">{effectiveStock}</span>;
 }
 
-export default function ProductsTable({ products, total, page, pageSize, totalPages }: ProductsTableProps) {
+export default function ProductsTable({ products, total, page, totalPages }: ProductsTableProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [search, setSearch] = useState(searchParams.get('q') ?? '');

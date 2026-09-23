@@ -12,9 +12,15 @@ import {
   setSessionCookies,
 } from '@/lib/auth/session';
 import { verifyRefreshToken } from '@/lib/auth/jwt';
+import { rateLimitKey, consumeRateLimit } from '@/lib/rate-limit';
 import type { PlatformRole } from '@/lib/auth/jwt';
 
+const REFRESH_LIMIT = 60; // token refreshes per IP per minute
+
 export async function POST(request: NextRequest) {
+  const remaining = consumeRateLimit(rateLimitKey(request, 'refresh'), REFRESH_LIMIT);
+  if (remaining <= 0) return authErrors.tooMany();
+
   const raw = readRefreshTokenRaw(request);
   if (!raw) return authErrors.badRequest('No refresh token');
 

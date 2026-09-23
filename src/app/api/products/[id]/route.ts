@@ -93,6 +93,19 @@ export const PATCH = requireAuthHandler(async (request: NextRequest, context: un
 
   if (errors.length > 0) return jsonError('Validation failed', 422);
 
+  // Tenant isolation: when switching categories, the new one must belong to
+  // this business (body-owned categoryId must not escape tenant scope).
+  if ('categoryId' in body) {
+    const categoryId = data.categoryId as string | null;
+    if (categoryId) {
+      const owned = await prisma.category.findFirst({
+        where: { id: categoryId, businessId: ctx.businessId },
+        select: { id: true },
+      });
+      if (!owned) return authErrors.badRequest('Category does not belong to this business');
+    }
+  }
+
   // Sync image rows when the client sends an updated image list
   if (Array.isArray(body.imageUrls)) {
     const urls = (body.imageUrls as string[]).filter(Boolean);

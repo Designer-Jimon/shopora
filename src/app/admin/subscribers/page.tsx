@@ -10,6 +10,7 @@ const STATUS_LABELS: Record<string, string> = {
   past_due: 'Past due',
   suspended: 'Suspended',
   cancelled: 'Cancelled',
+  downgraded: 'Downgraded',
   none: 'No plan',
 };
 
@@ -19,6 +20,7 @@ const STATUS_STYLE: Record<string, string> = {
   past_due: 'bg-orange-100 text-orange-700',
   suspended: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
+  downgraded: 'bg-amber-100 text-amber-700',
   none: 'bg-gray-100 text-gray-500',
 };
 
@@ -55,7 +57,9 @@ export default async function SubscribersPage({ searchParams }: { searchParams: 
     ? rows
     : status === 'none'
       ? rows.filter((b) => !b.subscription)
-      : rows.filter((b) => b.subscription?.status === status);
+      : status === 'downgraded'
+        ? rows.filter((b) => b.subscription?.status === 'active' && b.subscription?.plan.name === 'starter')
+        : rows.filter((b) => b.subscription?.status === status);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
@@ -109,9 +113,18 @@ export default async function SubscribersPage({ searchParams }: { searchParams: 
                     <p className="text-[var(--color-text-muted)]">/{b.slug}{b.category ? ` · ${b.category}` : ''}</p>
                   </td>
                   <td className="px-4 py-2.5">
-                    {b.subscription
-                      ? <span className="font-semibold text-[var(--color-text)]">{b.subscription.plan.displayName}</span>
-                      : <span className="text-[var(--color-text-muted)]">—</span>}
+                    {b.subscription ? (
+                      <>
+                        <span className="font-semibold text-[var(--color-text)]">{b.subscription.plan.displayName}</span>
+                        {b.subscription.status === 'active' && b.subscription.plan.name === 'starter' && (
+                          <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700" title="Soft downgrade to Free (trial expired / payment failed)">
+                            Downgraded
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-[var(--color-text-muted)]">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5">
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${STATUS_STYLE[st]}`}>

@@ -7,7 +7,7 @@
 //   marked paid manually by the business.
 
 import { NextRequest } from 'next/server';
-import { jsonOk, jsonError, jsonCreated, authErrors } from '@/lib/http';
+import { jsonError, jsonCreated, authErrors } from '@/lib/http';
 import { getTenantContext } from '@/lib/tenant';
 import { withTenant } from '@/lib/withTenant';
 import { readCartSessionId, resolveCartBusiness } from '@/lib/cart';
@@ -15,7 +15,7 @@ import { placeOrder, type DeliveryAddress } from '@/lib/order';
 import { getConnectedProvider } from '@/lib/payments';
 import { recordPaymentInitiation } from '@/lib/payments/orders';
 import { PAYMENT_METHODS } from '@/lib/payments/types';
-import { getSubscriptionState, isCheckoutAllowed } from '@/lib/subscriptions/state';
+import { getSubscriptionState, isCheckoutAllowed, ordersThisMonth } from '@/lib/subscriptions/state';
 import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
 
 export const POST = withTenant(async (request: NextRequest, ctx) => {
@@ -28,6 +28,17 @@ export const POST = withTenant(async (request: NextRequest, ctx) => {
   const sub = await getSubscriptionState(biz.id);
   if (sub.status === SUBSCRIPTION_STATUSES.cancelled) return authErrors.notFound('Store not found');
   if (!isCheckoutAllowed(sub.status)) return jsonError('This store is temporarily unable to take orders — please try again later.', 423);
+
+  // Phase 11 — monthly order cap from the plan (Free = 50/mo, Starter = 500/mo,
+  // Growth = unlimited). Soft limit: excess orders are declined, the store
+  // stays live.
+  const orderCountThisMonth = await ordersThisMonth(biz.id);
+  if (orderCountThisMonth >= sub.orderLimit) {
+    return jsonError(
+      `This store has reached its ${String(sub.orderLimit)}-order monthly limit on the ${sub.planDisplayName} plan. Please try again next month.`,
+      423,
+    );
+  }
 
   const sessionId = readCartSessionId(request);
   if (!sessionId) return authErrors.badRequest('Your cart is empty');

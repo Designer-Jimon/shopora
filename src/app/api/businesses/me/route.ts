@@ -88,7 +88,7 @@ export const PATCH = requireAuthHandler(async (request: NextRequest) => {
         select: { id: true },
       });
       if (collision) {
-        let suggestion = slugify(current.name) || 'business';
+        const suggestion = slugify(current.name) || 'business';
         let slugAttempt = suggestion;
         let counter = 2;
         while (await prisma.business.findFirst({ where: { slug: slugAttempt, id: { not: ctx.businessId } } })) {

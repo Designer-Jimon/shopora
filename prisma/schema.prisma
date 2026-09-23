@@ -235,6 +235,7 @@ model Product {
   @@index([businessId])
   @@index([categoryId])
   @@index([status])
+  @@index([businessId, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +361,8 @@ model Order {
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+  @@index([businessId, createdAt])
+  @@index([businessId, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -494,21 +497,32 @@ model InventoryTransaction {
 }
 
 // ---------------------------------------------------------------------------
-// SubscriptionPlan — the tier catalogue (Phase 9). Seeded by db:seed-plans.
-// productLimit/staffLimit gate create/invite; customDomain + analyticsTier flip
-// features in later phases. Prices are the store's billable NGN amounts.
+// SubscriptionPlan — the tier catalogue (Phase 9, repurposed Phase 11).
+// Seeded by db:seed-plans. Names are STABLE keys; displayName/prices/limits are
+// admin-managed from Phase 10 onwards (seeding only ever creates rows).
+// Phase 11 catalogue: 'starter' → Free (₦0), 'business' → Starter (₦10k/mo),
+// 'premium' → Growth (₦25k/mo).
+// productLimit/staffLimit gate create/invite; orderLimit gates monthly order
+// volume at checkout; removeBranding strips "Powered by SHOPORA" from the
+// storefront footer; customDomain+analyticsTier flip features.
+// paystackPlanCode is the Native Paystack Plan (PLN_...) created lazily for the
+// MONTHLY interval when a business first checks out with a paid plan. It is
+// always null for the Free plan (₦0 — Paystack has nothing to bill).
 // ---------------------------------------------------------------------------
 model SubscriptionPlan {
   id                 String   @id @default(cuid())
-  name               String   @unique // 'starter' | 'business' | 'premium'
+  name               String   @unique // 'starter'(Free) | 'business'(Starter) | 'premium'(Growth)
   displayName        String
   description        String?
   monthlyPriceNaira  Decimal  @db.Decimal(12, 2)
   annualPriceNaira   Decimal  @db.Decimal(12, 2)
   productLimit       Int      @default(50)
   staffLimit         Int      @default(2)
+  orderLimit         Int      @default(50)        // orders per calendar month
   customDomain       Boolean  @default(false)
-  analyticsTier      String   @default("basic") // basic | advanced
+  removeBranding     Boolean  @default(false)     // paid plans remove SHOPORA footer
+  analyticsTier      String   @default("basic")   // basic | advanced
+  paystackPlanCode   String?                      // native Paystack plan code (PLN_…), monthly interval
   isActive           Boolean  @default(true)
   sortOrder          Int      @default(0)
   createdAt          DateTime @default(now())
@@ -520,26 +534,35 @@ model SubscriptionPlan {
 }
 
 // ---------------------------------------------------------------------------
-// Subscription — a business's live plan + billing state (Phase 9).
-//   trial     → free Starter trial (14d). expires into past_due.
-//   active    → paid. expires (period end) into past_due.
-//   past_due  → grace (7d). store stays live; checkout allowed. → suspended.
-//   suspended → checkout blocked; storefront stays viewable. → cancelled.
-//   cancelled → storefront 404; dashboard read-only except Subscription page.
-// currentPeriodEnd doubles as the rolling deadline for the CURRENT status
-// (trial end, paid period end, grace end, or suspension end).
+// Subscription — a business's live plan + billing state (Phase 9, Phase 11).
+//   trial    → on the paid Starter plan for TRIAL_DAYS. Overdue trial (or any
+//              legacy ladder state that lapses) SOFT-DOWNGRADES to active on
+//              the Free plan — limits are enforced, nobody is locked out.
+//   active   → current plan. Paid plans run on a NATIVE Paystack Subscription
+//              (paystackSubscriptionCode); renewal/payment-failure is owned by
+//              Paystack and driven into this row via webhook. The Free plan is
+//              also 'active' (never expires).
+//   past_due ← legacy grace state (Phase 9). Converges to active-on-Free via
+//              checkSubscription/cron when its deadline passes.
+//   suspended/cancelled — Phase 10 moderation ('suspended') or legacy billing
+//              end states ('cancelled'). Legacy rows without a native Paystack
+//              subscription code are recovered to active-on-Free too; a
+//              moderation suspend on a live native subscription is respected.
+// currentPeriodEnd: for Free/paid rows it is the rolling month boundary; for
+// legacy rows it doubles as the grace/suspension deadline.
 // ---------------------------------------------------------------------------
 model Subscription {
   id                       String   @id @default(cuid())
   businessId               String   @unique
   planId                   String
-  billingCycle             String   @default("monthly") // monthly | annual
+  billingCycle             String   @default("monthly") // monthly (annual reserved)
   status                   String   @default("trial")   // trial|active|past_due|suspended|cancelled
   trialEndsAt              DateTime?
   currentPeriodEnd         DateTime
   cancelledAt              DateTime?
   paystackCustomerCode     String?
   paystackAuthorizationCode String?
+  paystackSubscriptionCode String?  // native Paystack Subscription code (SUB_…), cleared on downgrade
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
@@ -565,6 +588,25 @@ model SubscriptionHistory {
   subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
   @@index([subscriptionId])
+}
+
+// ---------------------------------------------------------------------------
+// WebhookEvent — idempotency ledger for gateway webhooks (Phase 11).
+// Each processed event records exactly one row keyed by (event, eventId), so a
+// replayed webhook (same event + same payload id) is acknowledged and dropped
+// instead of double-mutating state. eventId is the Paystack payload `data.id`,
+// unique per event type. Chatty events (charge.success per attempt) get their
+// own ids naturally.
+// ---------------------------------------------------------------------------
+model WebhookEvent {
+  id        String   @id @default(cuid())
+  event     String
+  eventId   String
+  provider  String   @default("paystack")
+  createdAt DateTime @default(now())
+
+  @@unique([event, eventId])
+  @@index([createdAt])
 }
 
 // ---------------------------------------------------------------------------

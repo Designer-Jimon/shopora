@@ -17,6 +17,7 @@ function planPayload(body: Record<string, unknown>) {
   const annualPriceNaira = typeof body.annualPriceNaira === 'number' ? body.annualPriceNaira : Number(body.annualPriceNaira);
   const productLimit = Number(body.productLimit);
   const staffLimit = Number(body.staffLimit);
+  const orderLimit = body.orderLimit === undefined ? 50 : Number(body.orderLimit);
   return {
     name: typeof body.name === 'string' ? body.name.trim().toLowerCase() : '',
     displayName: typeof body.displayName === 'string' ? body.displayName.trim() : '',
@@ -25,7 +26,9 @@ function planPayload(body: Record<string, unknown>) {
     annualPriceNaira,
     productLimit,
     staffLimit,
+    orderLimit,
     customDomain: body.customDomain === true || body.customDomain === 'true',
+    removeBranding: body.removeBranding === true || body.removeBranding === 'true',
     analyticsTier: ['basic', 'advanced'].includes(String(body.analyticsTier)) ? String(body.analyticsTier) : 'basic',
     sortOrder: Number(body.sortOrder) || 0,
   };
@@ -40,6 +43,7 @@ function planErrors(p: ReturnType<typeof planPayload>): string[] {
   if (!Number.isFinite(p.annualPriceNaira) || p.annualPriceNaira < 0) errors.push('Annual price must be a non-negative number');
   if (!Number.isInteger(p.productLimit) || p.productLimit < 0) errors.push('Product limit must be a non-negative integer');
   if (!Number.isInteger(p.staffLimit) || p.staffLimit < 0) errors.push('Staff limit must be a non-negative integer');
+  if (!Number.isInteger(p.orderLimit) || p.orderLimit < 0) errors.push('Order limit must be a non-negative integer');
   return errors;
 }
 
@@ -58,7 +62,9 @@ export const GET = withAdminHandler('platform.plans.manage', async () => {
       annualPriceNaira: Number(p.annualPriceNaira),
       productLimit: p.productLimit,
       staffLimit: p.staffLimit,
+      orderLimit: p.orderLimit,
       customDomain: p.customDomain,
+      removeBranding: p.removeBranding,
       analyticsTier: p.analyticsTier,
       isActive: p.isActive,
       sortOrder: p.sortOrder,
@@ -89,7 +95,9 @@ export const POST = withAdminHandler('platform.plans.manage', async (request: Ne
       annualPriceNaira: p.annualPriceNaira,
       productLimit: p.productLimit,
       staffLimit: p.staffLimit,
+      orderLimit: p.orderLimit,
       customDomain: p.customDomain,
+      removeBranding: p.removeBranding,
       analyticsTier: p.analyticsTier,
       sortOrder: p.sortOrder,
       isActive: true,

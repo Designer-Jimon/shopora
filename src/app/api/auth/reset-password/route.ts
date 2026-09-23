@@ -8,8 +8,14 @@ import prisma from '@/lib/prisma';
 import { jsonOk, authErrors } from '@/lib/http';
 import { validatePassword } from '@/lib/validate';
 import { hashPassword, hashResetToken } from '@/lib/auth/password';
+import { rateLimitKey, consumeRateLimit } from '@/lib/rate-limit';
+
+const RESET_LIMIT = 10; // reset attempts per IP per minute
 
 export async function POST(request: NextRequest) {
+  const remaining = consumeRateLimit(rateLimitKey(request, 'reset-password'), RESET_LIMIT);
+  if (remaining <= 0) return authErrors.tooMany();
+
   let body: Record<string, unknown>;
   try { body = await request.json(); }
   catch { return authErrors.badRequest('Invalid JSON body'); }

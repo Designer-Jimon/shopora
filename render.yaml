@@ -1,0 +1,58 @@
+# SHOPORA — Render blueprint (single web service).
+# The app is single-instance-safe (in-memory rate limiter + PostgreSQL)
+# and intentionally has NO multi-instance horizontal scaling; keep
+# instances: 1 so the auth rate limiter stays meaningfully global.
+#
+# Manual steps the blueprint cannot automate:
+#   1. Create the PostgreSQL database and set DATABASE_URL to its URL
+#      (recommended: a Render Postgres service).
+#   2. (Optional) Create a Cloudflare R2 bucket + API token and set the
+#      R2_* variables + R2_PUBLIC_BASE_URL; else leave STORAGE_DRIVER=local
+#      (uploads live on the service's ephemeral disk).
+#   3. In Paystack: set the webhook URL to
+#      https://<your-app>.onrender.com/api/webhooks/paystack
+#   4. Create the cron trigger for /api/cron/billing?token=<CRON_TOKEN>.
+
+services:
+  - type: web
+    name: shopora
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    preDeployCommand: npx prisma migrate deploy
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false # https://<your-app>.onrender.com
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      # REQUIRED in production: the app refuses to boot payment-secret
+      # encryption without it.
+      - key: KEY_ENCRYPTION_SECRET
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_WEBHOOK_SECRET
+        sync: false
+      - key: CRON_TOKEN
+        sync: false
+      # Storage: local (default) or r2.
+      - key: STORAGE_DRIVER
+        value: local
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false

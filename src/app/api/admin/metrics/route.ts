@@ -3,7 +3,6 @@
 // (no stubs): business totals by subscription status, MRR (monthly-equivalent
 // revenue of active/past_due subscriptions), and 30-day registration counts.
 
-import { NextRequest } from 'next/server';
 import { jsonOk } from '@/lib/http';
 import { withAdminHandler } from '@/lib/admin';
 import prisma from '@/lib/prisma';

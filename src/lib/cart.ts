@@ -9,8 +9,9 @@
 // caller's slug (API routes) or the layout-resolved StorefrontBusiness.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { cache } from 'react';
 import prisma from '@/lib/prisma';
-import type { Cart, CartItem, Product, ProductVariant } from '@prisma/client';
+import type { CartItem, Product, ProductVariant } from '@prisma/client';
 
 export const CART_COOKIE = 'shopora_cart_session';
 const CART_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -100,28 +101,6 @@ export function linePrice(
   return { unit: Number(discount), original: base };
 }
 
-const CART_ITEM_INCLUDE = {
-  product: {
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-      price: true,
-      discountPrice: true,
-      status: true,
-    },
-  },
-  variant: {
-    select: {
-      id: true,
-      color: true,
-      size: true,
-      priceOverride: true,
-      stockQuantity: true,
-    },
-  },
-} as const;
-
 function cartItemToLine(item: CartItemRow): CartLine {
   const variantLabel =
     item.variant != null
@@ -193,12 +172,14 @@ export async function findCart(businessId: string, sessionId: string) {
 }
 
 /** Total quantity across a cart's lines (header badge + cart page). */
-export async function getCartCount(businessId: string, sessionId: string): Promise<number> {
-  const cart = await findCart(businessId, sessionId);
-  if (!cart) return 0;
-  const agg = await prisma.cartItem.aggregate({ where: { cartId: cart.id }, _sum: { quantity: true } });
-  return agg._sum.quantity ?? 0;
-}
+export const getCartCount = cache(
+  async (businessId: string, sessionId: string): Promise<number> => {
+    const cart = await findCart(businessId, sessionId);
+    if (!cart) return 0;
+    const agg = await prisma.cartItem.aggregate({ where: { cartId: cart.id }, _sum: { quantity: true } });
+    return agg._sum.quantity ?? 0;
+  },
+);
 
 /** An empty cart view (no persisted cart yet). */
 export function emptyCartView(businessId: string, sessionId: string): CartView {

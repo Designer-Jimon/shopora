@@ -1,6 +1,5 @@
 // SHOPORA — DELETE /api/admin/settings/[key]
 
-import { NextRequest } from 'next/server';
 import { jsonOk, authErrors } from '@/lib/http';
 import { withAdminHandler } from '@/lib/admin';
 import { requireAuth } from '@/lib/tenant';

@@ -107,7 +107,7 @@ async function main() {
   const dashOwner = await req('/dashboard', 'GET', undefined, ownerAuth);
   ok('/dashboard loads 200 for completed owner', dashOwner.status===200, `status=${dashOwner.status} loc=${dashOwner.location}`);
   const htmlO = typeof dashOwner.data === 'string' ? dashOwner.data : JSON.stringify(dashOwner.data);
-  for (const label of ['Dashboard','Products','Sales','Marketing','Store','Payments','Subscription','Settings']) {
+  for (const label of ['Dashboard','Products','Sales','Marketing','Store','Payments','Billing','Settings']) {
     ok(`owner sees "${label}"`, hasNav(htmlO, label), `missing ${label}`);
   }
 
@@ -134,7 +134,7 @@ async function main() {
   for (const label of ['Products','Sales','Store','Settings']) {
     ok(`staff sees "${label}"`, hasNav(htmlS, label), `missing ${label}`);
   }
-  for (const label of ['Marketing','Payments','Subscription']) {
+  for (const label of ['Marketing','Payments','Billing']) {
     ok(`staff hidden from "${label}"`, !hasNav(htmlS, label), `should not see ${label}`);
   }
   // Store children are gated by settings.write — Domain hidden for staff.

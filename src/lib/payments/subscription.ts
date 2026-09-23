@@ -3,14 +3,20 @@
 // their own connected Paystack still handles store checkout). Nothing here
 // touches order-payment logic.
 //
-// Flow:
-//   1. initializeSubscriptionCheckout → first payment, hosted checkout page.
-//      The captured authorization code is stored so renewals can charge it.
-//   2. chargeAuthorization → renewal/upgrade on a stored authorization code
-//      (no customer interaction). Falls back to a fresh hosted checkout when
-//      the code is missing/no longer valid.
-//   3. Webhook charge.success for a subscription transaction (providerRef
-//      prefix SP-SUB-) → applySubscriptionPaymentSuccess (idempotent).
+// Phase 11 flows (NATIVE Paystack Subscriptions — Paystack owns the schedule):
+//   1. ensurePaystackPlanCode → lazily creates the monthly Paystack Plan
+//      (PLN_…) for a paid SubscriptionPlan row.
+//   2. initializeNativeSubscriptionCheckout → hosted checkout that SUBSCRIBES
+//      the customer (transaction/initialize with `plan`). On success Paystack
+//      fires charge.success + subscription.create webhooks.
+//   3. Webhooks drive state: subscription.create (link + activate),
+//      charge.success (initial via pre-recorded transaction, renewals via
+//      subscription_code), invoice.payment_failed / subscription.disable
+//      (downgrade to Free — see src/lib/subscriptions/webhooks.ts).
+//
+// The Phase 9 legacy path (hosted one-off checkout + chargeAuthorization +
+// applySubscriptionPaymentSuccess on SP-SUB-* references) is retained so
+// already-initiated legacy sessions keep settling.
 
 const PAYSTACK_API = 'https://api.paystack.co';
 const TIMEOUT_MS = 15000;
@@ -20,7 +26,7 @@ import prisma from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { PaystackProvider } from './paystack';
 import { PAYMENT_PROVIDERS, type VerifyTransactionResult } from './types';
-import { addDays, BILLING_CYCLES, priceForCycle, SUBSCRIPTION_STATUSES, type BillingCycle } from '@/lib/subscriptions/plans';
+import { addDays, BILLING_CYCLES, PLAN_KEYS, priceForCycle, SUBSCRIPTION_STATUSES, type BillingCycle } from '@/lib/subscriptions/plans';
 import { invalidateSubscriptionCache } from '@/lib/subscriptions/state';
 
 /** The platform's own Paystack secret (subscription revenue comes to SHOPORA). */
@@ -103,6 +109,112 @@ export async function initializeSubscriptionCheckout(input: {
   return init;
 }
 
+/**
+ * Ensure a paid SubscriptionPlan row has a NATIVE Paystack Plan (monthly). The
+ * PLN_ code is created once and stored on the row; Free (₦0) plans have no
+ * code. Network + platform secret required — returns an error result instead
+ * of throwing so callers can surface a 502.
+ */
+export async function ensurePaystackPlanCode(plan: {
+  id: string;
+  name: string;
+  displayName: string;
+  monthlyPriceNaira: { toString(): string } | number;
+  paystackPlanCode: string | null;
+}): Promise<{ ok: true; planCode: string } | { ok: false; error: string }> {
+  if (plan.name === PLAN_KEYS.free) return { ok: false, error: 'The free plan has no Paystack plan code' };
+  if (plan.paystackPlanCode) return { ok: true, planCode: plan.paystackPlanCode };
+
+  const secret = getPlatformPaystackSecret();
+  if (!secret) return { ok: false, error: 'Platform Paystack is not configured' };
+
+  const amountNaira =
+    typeof plan.monthlyPriceNaira === 'number' ? plan.monthlyPriceNaira : Number(plan.monthlyPriceNaira);
+  try {
+    const res = await platformFetch(`${PAYSTACK_API}/plan`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: `SHOPORA ${plan.displayName} — monthly`,
+        amount: Math.round(amountNaira * 100),
+        interval: 'monthly',
+        currency: 'NGN',
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    const planCode = String(data?.data?.plan_code ?? '');
+    if (!res.ok || !data?.status || !planCode) {
+      return { ok: false, error: data?.message ?? `Paystack plan create failed (${res.status})` };
+    }
+    await prisma.subscriptionPlan.update({
+      where: { id: plan.id },
+      data: { paystackPlanCode: planCode },
+    });
+    return { ok: true, planCode };
+  } catch {
+    return { ok: false, error: 'Could not reach Paystack to create subscription plan' };
+  }
+}
+
+/**
+ * Start a NATIVE Paystack subscription: hosted checkout with the plan code
+ * attached, so the customer authorises a recurring subscription rather than a
+ * one-off charge. Pre-records the initial Transaction row (reference is the
+ * first charge's reference, resolvable by webhook/verify); subsequent renewals
+ * carry their own Paystack-generated references and are resolved by
+ * subscription_code instead.
+ */
+export async function initializeNativeSubscriptionCheckout(input: {
+  businessId: string;
+  planCode: string;
+  amount: number;
+  email: string;
+  callbackUrl: string;
+}): Promise<
+  | { ok: true; providerRef: string; authorizationUrl: string }
+  | { ok: false; error: string }
+> {
+  const secret = getPlatformPaystackSecret();
+  if (!secret) return { ok: false, error: 'Platform Paystack is not configured' };
+
+  const reference = buildSubscriptionRef();
+  try {
+    const res = await platformFetch(`${PAYSTACK_API}/transaction/initialize`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        amount: Math.round(input.amount * 100),
+        email: input.email,
+        reference,
+        callback_url: input.callbackUrl,
+        plan: input.planCode,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.status) {
+      return { ok: false, error: data?.message ?? `Paystack initialize failed (${res.status})` };
+    }
+    const providerRef = String(data.data?.reference ?? reference);
+    const authorizationUrl = String(data.data?.authorization_url ?? '');
+    if (!authorizationUrl) return { ok: false, error: 'Paystack returned no authorization URL' };
+
+    await recordSubscriptionTransaction({
+      businessId: input.businessId,
+      providerRef,
+      amount: input.amount,
+    });
+    return { ok: true, providerRef, authorizationUrl };
+  } catch {
+    return { ok: false, error: 'Could not reach Paystack to start subscription' };
+  }
+}
+
 /** Verify a subscription transaction server-side (never trust the redirect). */
 export async function verifySubscriptionTransaction(reference: string): Promise<VerifyTransactionResult> {
   const secret = getPlatformPaystackSecret();
@@ -176,6 +288,7 @@ export async function applySubscriptionPaymentSuccess(input: {
   amount: number;
   authorizationCode?: string | null;
   customerCode?: string | null;
+  subscriptionCode?: string | null;
   planId?: string | null;
   billingCycle?: BillingCycle | null;
 }): Promise<'processed' | 'duplicate'> {
@@ -218,6 +331,7 @@ export async function applySubscriptionPaymentSuccess(input: {
         cancelledAt: null,
         paystackAuthorizationCode: input.authorizationCode ?? sub.paystackAuthorizationCode,
         paystackCustomerCode: input.customerCode ?? sub.paystackCustomerCode,
+        paystackSubscriptionCode: input.subscriptionCode ?? sub.paystackSubscriptionCode,
       },
     });
     if (previousStatus !== SUBSCRIPTION_STATUSES.active) {
@@ -227,6 +341,154 @@ export async function applySubscriptionPaymentSuccess(input: {
           fromStatus: previousStatus,
           toStatus: SUBSCRIPTION_STATUSES.active,
           note: 'Payment received — subscription active',
+        },
+      });
+    }
+    return 'processed';
+  }).then((r) => {
+    if (r === 'processed') invalidateSubscriptionCache(businessId);
+    return r;
+  });
+}
+
+/** Map a native Paystack Plan code (PLN_…) back to the SubscriptionPlan row. */
+export async function resolvePlanByPaystackCode(
+  paystackPlanCode: string,
+): Promise<{ id: string; name: string } | null> {
+  if (!paystackPlanCode) return null;
+  return prisma.subscriptionPlan.findFirst({
+    where: { paystackPlanCode },
+    select: { id: true, name: true },
+  });
+}
+
+/**
+ * Apply `subscription.create` (native Paystack). Links the native Subscription
+ * code, activates the business on the plan the subscription was created under,
+ * and rolls the period forward one month from max(now, periodEnd). Returns
+ * 'processed'/'duplicate' (duplicate when the row was already active on the
+ * same plan — webhook ledger catches replays anyway).
+ */
+export async function applyNativeSubscriptionCreate(input: {
+  businessId: string;
+  planId: string;
+  subscriptionCode: string;
+  customerCode?: string | null;
+}): Promise<'processed' | 'duplicate' | 'noop'> {
+  const { businessId } = input;
+  return prisma.$transaction(async (tx) => {
+    const sub = await tx.subscription.findUnique({ where: { businessId } });
+    if (!sub) throw new Error(`Subscription missing for business ${businessId}`);
+
+    const base = new Date() > sub.currentPeriodEnd ? new Date() : sub.currentPeriodEnd;
+    const nextEnd = addDays(base, 30);
+    const previousStatus = sub.status;
+    const planChanged = input.planId !== sub.planId;
+
+    if (sub.status === SUBSCRIPTION_STATUSES.active && !planChanged && sub.paystackSubscriptionCode === input.subscriptionCode) {
+      return 'noop'; // already exactly this active state — nothing to write
+    }
+
+    await tx.subscription.update({
+      where: { businessId },
+      data: {
+        status: SUBSCRIPTION_STATUSES.active,
+        planId: input.planId,
+        billingCycle: BILLING_CYCLES.monthly,
+        currentPeriodEnd: nextEnd,
+        trialEndsAt: null,
+        cancelledAt: null,
+        paystackSubscriptionCode: input.subscriptionCode,
+        paystackCustomerCode: input.customerCode ?? sub.paystackCustomerCode,
+      },
+    });
+    if (previousStatus !== SUBSCRIPTION_STATUSES.active || planChanged) {
+      await tx.subscriptionHistory.create({
+        data: {
+          subscriptionId: sub.id,
+          fromStatus: previousStatus,
+          toStatus: SUBSCRIPTION_STATUSES.active,
+          note: 'Native Paystack subscription created — active on paid plan',
+        },
+      });
+    }
+    return 'processed';
+  }).then((r) => {
+    if (r === 'processed') invalidateSubscriptionCache(businessId);
+    return r;
+  });
+}
+
+/**
+ * Apply a native renewal/initial `charge.success` that has NO pre-recorded
+ * Transaction row (Paystack-generated reference): record the subscription
+ * transaction once, reactivate on the plan the charge belongs to, re-link the
+ * native subscription (a late-successful retry upgrades a previously
+ * downgraded business back onto the plan they paid for), and roll the period
+ * forward. Idempotent via (provider, providerRef) unique + the webhook ledger.
+ */
+export async function applyNativeRenewalCharge(input: {
+  businessId: string;
+  providerRef: string;
+  amount: number;
+  planId: string | null;
+  subscriptionCode: string;
+  customerCode?: string | null;
+  authorizationCode?: string | null;
+}): Promise<'processed' | 'duplicate'> {
+  const { businessId, providerRef, amount } = input;
+
+  return prisma.$transaction(async (tx) => {
+    try {
+      await tx.transaction.create({
+        data: {
+          businessId,
+          orderId: null,
+          provider: PAYMENT_PROVIDERS.paystack,
+          providerRef,
+          amount: new Prisma.Decimal(Number.isFinite(amount) ? amount.toFixed(2) : '0'),
+          status: 'success',
+          type: 'subscription',
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return 'duplicate';
+      throw err;
+    }
+
+    const sub = await tx.subscription.findUnique({
+      where: { businessId },
+      include: { plan: { select: { name: true } } },
+    });
+    if (!sub) throw new Error(`Subscription missing for business ${businessId}`);
+
+    const base = new Date() > sub.currentPeriodEnd ? new Date() : sub.currentPeriodEnd;
+    const nextEnd = addDays(base, 30);
+    const previousStatus = sub.status;
+    const planId = input.planId ?? sub.planId;
+    const planChanged = planId !== sub.planId;
+
+    await tx.subscription.update({
+      where: { businessId },
+      data: {
+        status: SUBSCRIPTION_STATUSES.active,
+        planId,
+        billingCycle: BILLING_CYCLES.monthly,
+        currentPeriodEnd: nextEnd,
+        trialEndsAt: null,
+        cancelledAt: null,
+        paystackSubscriptionCode: input.subscriptionCode || sub.paystackSubscriptionCode,
+        paystackCustomerCode: input.customerCode ?? sub.paystackCustomerCode,
+        paystackAuthorizationCode: input.authorizationCode ?? sub.paystackAuthorizationCode,
+      },
+    });
+    if (previousStatus !== SUBSCRIPTION_STATUSES.active || planChanged) {
+      await tx.subscriptionHistory.create({
+        data: {
+          subscriptionId: sub.id,
+          fromStatus: previousStatus,
+          toStatus: SUBSCRIPTION_STATUSES.active,
+          note: 'Subscription charge received — active on paid plan',
         },
       });
     }

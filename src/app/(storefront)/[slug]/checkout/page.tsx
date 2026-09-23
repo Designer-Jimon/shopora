@@ -6,7 +6,6 @@ import { emptyCartView, findCart, getCartView } from '@/lib/cart';
 import { getDeliveryMethods } from '@/lib/order';
 import prisma from '@/lib/prisma';
 import { isPaymentGatewayConnected } from '@/lib/payments';
-import { PAYMENT_METHODS } from '@/lib/payments/types';
 import { getSubscriptionState } from '@/lib/subscriptions/state';
 import { SUBSCRIPTION_STATUSES } from '@/lib/subscriptions/plans';
 import CheckoutForm from '../../_components/CheckoutForm';

@@ -19,9 +19,18 @@ import prisma from '@/lib/prisma';
 const ALGO = 'aes-256-gcm';
 const VERSION = 'v1';
 
-/** Master key for encrypting provider secrets. Dev fallback keeps local runs working. */
+/**
+ * Master key for encrypting provider secrets.
+ * REQUIRED in production — the hardcoded dev fallback keeps local runs working
+ * but must never be reachable in prod (it would decrypt nothing anyway, since
+ * prod ciphertext is never (re)written with it, but we fail fast on purpose).
+ */
 export function getEncryptionSecret(): string {
-  return process.env.KEY_ENCRYPTION_SECRET ?? 'shopora-dev-key-encryption-secret-change-me';
+  const value = process.env.KEY_ENCRYPTION_SECRET;
+  if (!value && process.env.NODE_ENV === 'production') {
+    throw new Error('KEY_ENCRYPTION_SECRET is required in production');
+  }
+  return value ?? 'shopora-dev-key-encryption-secret-change-me';
 }
 
 function masterKey(): Buffer {

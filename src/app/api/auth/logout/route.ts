@@ -3,7 +3,6 @@
 // for logout; the short-lived access token expires on its own. Revocation
 // of suspended users is handled by the DB checks in resolveSession().
 
-import { NextResponse } from 'next/server';
 import { jsonNoContent } from '@/lib/http';
 import { clearSessionCookies } from '@/lib/auth/session';
 

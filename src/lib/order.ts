@@ -150,6 +150,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
               price: true,
               discountPrice: true,
               status: true,
+              stockQuantity: true,
             },
           },
           variant: {
@@ -178,23 +179,18 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
       const prepared: PreparedLine[] = [];
       for (const item of items) {
+        // Live stock comes from the SAME transactional cart query below — the
+        // candidate product + variant rows are loaded with stockQuantity, so no
+        // per-line re-fetch. Decrement is still guarded by updateMany(stock>=qty).
         if (item.product.status !== 'active') {
           throw new CheckoutError(`"${item.product.name}" is no longer available for purchase`);
         }
 
-        let liveVariant: (typeof items)[number]['variant'] = null;
-        let liveStock: number;
-        if (item.variantId) {
-          liveVariant = await tx.productVariant.findUnique({
-            where: { id: item.variantId },
-            select: { id: true, color: true, size: true, priceOverride: true, stockQuantity: true },
-          });
-          if (!liveVariant) throw new CheckoutError('A product option is no longer available');
-          liveStock = liveVariant.stockQuantity;
-        } else {
-          liveStock = (await tx.product.findUnique({ where: { id: item.productId }, select: { stockQuantity: true } }))
-            ?.stockQuantity ?? 0;
+        const liveVariant = item.variant;
+        if (item.variantId && !liveVariant) {
+          throw new CheckoutError('A product option is no longer available');
         }
+        const liveStock = item.variantId ? item.variant?.stockQuantity ?? 0 : item.product.stockQuantity;
 
         if (liveStock < item.quantity) {
           throw new CheckoutError(

@@ -80,8 +80,8 @@ async function createStaffUser(businessName) {
     });
   }
   await prisma.businessStaff.upsert({
-    where: { userId_businessId_roleId: { userId: user.id, businessId: biz.id, roleId: staffRole.id } },
-    update: { isActive: true },
+    where: { userId: user.id },
+    update: { businessId: biz.id, roleId: staffRole.id, isActive: true },
     create: { userId: user.id, businessId: biz.id, roleId: staffRole.id },
   });
   return user;

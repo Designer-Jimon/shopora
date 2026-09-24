@@ -8,6 +8,7 @@ import { jsonOk, authErrors } from '@/lib/http';
 import { requireAuth } from '@/lib/tenant';
 import { requireAuthHandler } from '@/lib/withTenant';
 import { ONBOARDING_DONE } from '@/lib/business';
+import { ensureSubscription } from '@/lib/subscriptions/state';
 
 export const POST = requireAuthHandler(async () => {
   const ctx = requireAuth();
@@ -21,6 +22,12 @@ export const POST = requireAuthHandler(async () => {
   if (current.onboardingStep < 4) {
     return authErrors.badRequest('Complete the previous onboarding steps first');
   }
+
+  // Defensive provisioning on the onboarding-completion boundary: the PRIMARY
+  // path already provisions at business creation (register), but this linchpin
+  // close any gap for a business that was created outside the registration flow
+  // (seed/verification scripts) and then completed onboarding. Idempotent.
+  await ensureSubscription(ctx.businessId);
 
   const updated = await prisma.business.update({
     where: { id: ctx.businessId },

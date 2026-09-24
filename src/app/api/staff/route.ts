@@ -51,11 +51,24 @@ export const POST = requireAuthHandler(async (request: NextRequest) => {
   }
 
   if (existingUser) {
-    const alreadyMember = await prisma.businessStaff.findFirst({
-      where: { businessId: ctx.businessId, userId: existingUser.id },
-      select: { id: true },
+    // One-business-per-account invariant (DB-enforced): a user can hold a
+    // BusinessStaff row on at most one business. If they already belong to
+    // THIS business → they're already on the team; if they belong to a DIFFERENT
+    // business → there is no supported way to add them here. Both reject with a
+    // clear 409 instead of attempting a write that would violate the unique
+    // BusinessStaff.userId constraint.
+    const existingMembership = await prisma.businessStaff.findFirst({
+      where: { userId: existingUser.id },
+      include: { business: { select: { name: true } } },
     });
-    if (alreadyMember) return authErrors.conflict('This user is already a member of your store');
+    if (existingMembership) {
+      if (existingMembership.businessId === ctx.businessId) {
+        return authErrors.conflict('This user is already a member of your store');
+      }
+      return authErrors.conflict(
+        `This account already belongs to ${existingMembership.business.name}. One business per account is enforced — invite them with a different email.`,
+      );
+    }
   }
 
   // One-time temporary password (meets the ≥8-char policy). Hashed at rest.

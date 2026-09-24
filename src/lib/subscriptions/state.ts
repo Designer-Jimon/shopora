@@ -60,9 +60,70 @@ export function invalidateSubscriptionCache(businessId: string): void {
 }
 
 /**
- * Provision the business's subscription lazily (first call on any entry
- * point): a 14-day TRIAL on the PAID Starter plan. Idempotent under
- * concurrency thanks to the @unique businessId.
+ * Create the trial Subscription row (+ SubscriptionHistory entry) inside an
+ * EXISTING transaction/transaction-client. Shared by both provisioning paths:
+ *   • provisionTrialAtCreation — eager, fired when a Business row is created
+ *     (primary mechanism — see src/app/api/auth/register/route.ts)
+ *   • ensureSubscription       — lazy defensive fallback (first touch)
+ * P2002 (businessId already provisioned) is swallowed by callers.
+ */
+async function createTrialRow(
+  tx: Prisma.TransactionClient,
+  businessId: string,
+  note: string,
+): Promise<void> {
+  const trialPlan = await tx.subscriptionPlan.findUnique({ where: { name: PLAN_KEYS.starter } });
+  if (!trialPlan) {
+    throw new Error(`Starting plan not found — cannot provision trial for ${businessId}`);
+  }
+
+  const now = new Date();
+  const trialEndsAt = addDays(now, TRIAL_DAYS);
+  await tx.subscription.create({
+    data: {
+      businessId,
+      planId: trialPlan.id,
+      billingCycle: BILLING_CYCLES.monthly,
+      status: SUBSCRIPTION_STATUSES.trial,
+      trialEndsAt,
+      currentPeriodEnd: trialEndsAt,
+      history: {
+        create: { fromStatus: null, toStatus: SUBSCRIPTION_STATUSES.trial, note },
+      },
+    },
+  });
+}
+
+/**
+ * Eager (PRIMARY) provisioning — called inside the same transaction that
+ * creates a new Business during registration. Ensures a brand-new business
+ * has a 14-day paid-Starter trial row the INSTANT its Business row exists,
+ * never relying on a later dashboard/storefront "touch". Idempotent: a P2002
+ * on businessId (racing registration retries) returns false and leaves the
+ * existing row alone.
+ */
+export async function provisionTrialAtCreation(
+  tx: Prisma.TransactionClient,
+  businessId: string,
+): Promise<boolean> {
+  await ensurePlansSeeded();
+  try {
+    await createTrialRow(tx, businessId, 'Paid-plan trial started at business creation');
+    invalidateSubscriptionCache(businessId);
+    return true;
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return false;
+    throw err;
+  }
+}
+
+/**
+ * Provision the business's subscription lazily (DEFENSIVE FALLBACK — first
+ * call on any entry point): a 14-day TRIAL on the PAID Starter plan.
+ * Idempotent under concurrency thanks to the @unique businessId.
+ * New businesses are expected to be provisioned eagerly by
+ * provisionTrialAtCreation; this only covers rows created outside the
+ * registration path (seed/verification scripts, pre-Phase-11 legacy rows).
  */
 export async function ensureSubscription(businessId: string): Promise<void> {
   const existing = await prisma.subscription.findUnique({
@@ -72,27 +133,8 @@ export async function ensureSubscription(businessId: string): Promise<void> {
   if (existing) return;
 
   await ensurePlansSeeded();
-  const trialPlan = await prisma.subscriptionPlan.findUnique({ where: { name: PLAN_KEYS.starter } });
-  if (!trialPlan) {
-    throw new Error(`Starting plan not found — cannot provision trial for ${businessId}`);
-  }
-
-  const now = new Date();
-  const trialEndsAt = addDays(now, TRIAL_DAYS);
   try {
-    await prisma.subscription.create({
-      data: {
-        businessId,
-        planId: trialPlan.id,
-        billingCycle: BILLING_CYCLES.monthly,
-        status: SUBSCRIPTION_STATUSES.trial,
-        trialEndsAt,
-        currentPeriodEnd: trialEndsAt,
-        history: {
-          create: { fromStatus: null, toStatus: SUBSCRIPTION_STATUSES.trial, note: 'Paid-plan trial started' },
-        },
-      },
-    });
+    await createTrialRow(prisma, businessId, 'Paid-plan trial started');
   } catch (err) {
     // Unique violation on businessId → another request provisioned it.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return;

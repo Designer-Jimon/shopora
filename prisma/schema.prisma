@@ -11,8 +11,10 @@ datasource db {
 }
 
 // ---------------------------------------------------------------------------
-// Users — account owners across the platform. A user may belong to many
-// businesses via BusinessStaff.
+// Users — account owners across the platform. PHASE 12 INVARIANT: every user
+// belongs to AT MOST ONE business (BusinessStaff.userId is unique) — a user is
+// either an Owner/Staff of their single store, a platform admin, or a
+// customer. This makes tenant resolution unambiguous by construction.
 // ---------------------------------------------------------------------------
 model User {
   id                       String    @id @default(cuid())
@@ -96,8 +98,14 @@ model Business {
 
 // ---------------------------------------------------------------------------
 // BusinessStaff — join table tying a User to a Business with a Role.
-// Uniqueness is on (userId, businessId, roleId) so one user can hold multiple
-// roles within the same business.
+// PHASE 12 INVARIANT: ONE BUSINESS PER ACCOUNT. `userId` is UNIQUE — a user can
+// hold exactly ONE BusinessStaff row, so they belong to exactly one business
+// (enforced at the database, not just application level). The dashboard/token
+// businessId is therefore unambiguous by construction: there is never a
+// "first-match" or silently-wrong default to pick between. Granting a user any
+// second membership (Owner or Staff, same or different business) is impossible
+// at the DB level; the staff-invite route additionally rejects it with a clear
+// 409 before it can even attempt the write.
 // ---------------------------------------------------------------------------
 model BusinessStaff {
   id         String   @id @default(cuid())
@@ -112,7 +120,7 @@ model BusinessStaff {
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   role     Role     @relation(fields: [roleId], references: [id])
 
-  @@unique([userId, businessId, roleId])
+  @@unique([userId])
   @@index([businessId])
   @@index([roleId])
 }

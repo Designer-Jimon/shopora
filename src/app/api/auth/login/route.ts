@@ -2,9 +2,11 @@
 // Validates credentials, issues access + refresh tokens in HttpOnly cookies.
 // Redirect priority is platform > business: an active PlatformStaff membership
 // yields role `platform_admin` (the client routes to /admin). Otherwise, for
-// business users, the first active BusinessStaff row supplies that businessId.
-// If the user belongs to multiple businesses, the first active membership is
-// used (multi-business switching arrives later).
+// business users, the BusinessStaff row supplies that businessId. The lookup is
+// a findFirst for historical compatibility, but the ONE-BUSINESS-PER-ACCOUNT
+// DB invariant (unique BusinessStaff.userId) means there is exactly ONE active
+// membership to find — the businessId in the token is unambiguous by
+// construction, never a first-match fallback.
 
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';

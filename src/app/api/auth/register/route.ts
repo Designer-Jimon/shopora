@@ -9,6 +9,7 @@ import { validateEmail, validatePassword, validateRequired, validateSlug, slugif
 import { hashPassword } from '@/lib/auth/password';
 import { setSessionCookies, issueTokenPair } from '@/lib/auth/session';
 import { rateLimitKey, consumeRateLimit } from '@/lib/rate-limit';
+import { provisionTrialAtCreation } from '@/lib/subscriptions/state';
 
 type RegisterKind = 'business' | 'customer';
 
@@ -109,6 +110,14 @@ export async function POST(request: NextRequest) {
           roleId: ownerRole.id,
         },
       });
+
+      // EAGER subscription provisioning (PRIMARY). The 14-day paid-Starter
+      // trial row is created in the SAME transaction as the Business, so a
+      // business never exists without a Subscription — even for a fraction of
+      // a second, and regardless of whether the owner ever opens the dashboard
+      // or storefront. (The lazy ensureSubscription path stays only as a
+      // defensive fallback for rows created outside this flow.)
+      await provisionTrialAtCreation(tx, biz.id);
 
       businessId = biz.id;
       businessRoleName = 'Owner';

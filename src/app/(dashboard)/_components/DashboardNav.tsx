@@ -49,6 +49,7 @@ function SidebarContent({
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   return (
     <div className="flex h-full flex-col">
@@ -65,25 +66,48 @@ function SidebarContent({
         <ul className="space-y-1">
           {nav.map((section) => {
             const sectionActive = isSectionActive(pathname, section.href);
+            const hasChildren = section.children.length > 0;
+            const childrenVisible = !(hasChildren && collapsed[section.href] && !sectionActive);
             return (
               <li key={section.href}>
-                <Link
-                  href={section.href}
-                  onClick={onNavigate}
-                  className={`flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium ${
-                    sectionActive
-                      ? 'bg-[var(--color-primary-50)] text-[var(--color-primary)]'
-                      : 'text-[var(--color-text-muted)] hover:bg-[var(--color-primary-50)] hover:text-[var(--color-primary)]'
-                  }`}
-                >
-                  <span>{section.label}</span>
-                  {section.children.length > 0 && (
-                    <span className="text-xs text-[var(--color-text-muted)]">
-                      {section.children.length}
-                    </span>
+                <div className="flex items-center">
+                  <Link
+                    href={section.href}
+                    onClick={onNavigate}
+                    className={`flex-1 rounded-md px-3 py-2 text-sm font-medium ${
+                      sectionActive
+                        ? 'bg-[var(--color-primary-50)] text-[var(--color-primary)]'
+                        : 'text-[var(--color-text-muted)] hover:bg-[var(--color-primary-50)] hover:text-[var(--color-primary)]'
+                    }`}
+                  >
+                    {section.label}
+                  </Link>
+                  {hasChildren && (
+                    <button
+                      type="button"
+                      onClick={() => setCollapsed((c) => ({ ...c, [section.href]: childrenVisible }))}
+                      aria-expanded={childrenVisible}
+                      aria-label={`${childrenVisible ? 'Collapse' : 'Expand'} ${section.label}`}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--color-text-muted)] transition hover:bg-[var(--color-primary-50)] hover:text-[var(--color-primary)]"
+                    >
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                        className={`transition-transform ${childrenVisible ? 'rotate-90' : ''}`}
+                      >
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </button>
                   )}
-                </Link>
-                {section.children.length > 0 && (
+                </div>
+                {childrenVisible && (
                   <ul className="mt-1 space-y-1 pl-3">
                     {section.children.map((child) => {
                       const active = isItemActive(pathname, child.href);

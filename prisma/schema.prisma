@@ -89,6 +89,7 @@ model Business {
   paymentProviders PaymentProvider[]
   transactions   Transaction[]
   subscription   Subscription?
+  storefrontDesigns StorefrontDesign[]
   auditLogs      AuditLog[]
   supportTickets SupportTicket[]
 
@@ -732,4 +733,44 @@ model PlatformSetting {
   updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
 
   @@index([key])
+}
+
+// ---------------------------------------------------------------------------
+// StorefrontDesign — the merchant's Design Studio document (Phase 13).
+// One design = a structured JSON document (canvas configuration + elements),
+// NOT a rendered HTML string. Every row is tenant-scoped to exactly one
+// Business; ALL access is authorized server-side against the verified session
+// businessId (a merchant can only ever see/edit their own designs — enforced by
+// the /api/storefront-designs routes with `{ id, businessId: ctx.businessId }`
+// scoping; platform super-admin access flows through the Phase 10
+// impersonation mechanism, not through this model).
+//
+//   canvas  — { width, height, background: { type: 'color'|'image', color, imageUrl } }
+//   elements— StorefrontElement[] (text / image / shape / button / logo); each
+//             element carries x, y, width, height, rotation, opacity, zIndex,
+//             type-specific content (text, font, color, imageUrl, shape…). See
+//             src/lib/storefront-design/types.ts for the canonical contract.
+//
+// Fields reserved for Part 2 (responsive rendering + publish flow) — present
+// now so the migration is not disruptive later, unused by the Part 1 editor:
+//   status      — 'draft' (default) | 'published' (Part 2 state machine)
+//   publishedAt — set when a design is first published
+//   metadata    — free-form JSON reserved for responsive/safe-zone config
+//   elements.*.responsive — optional per-element breakpoint config (JSON)
+// ---------------------------------------------------------------------------
+model StorefrontDesign {
+  id          String   @id @default(cuid())
+  businessId  String
+  name        String   @default("Untitled design")
+  status      String   @default("draft") // draft | published (Part 2)
+  canvas      Json     @default("{}")    // StorefrontCanvas
+  elements    Json     @default("[]")    // StorefrontElement[]
+  metadata    Json     @default("{}")    // reserved for Part 2 (responsive/safe-zone)
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
 }

@@ -56,6 +56,9 @@ async function enforceSubscriptionWriteGate(
 const IMPERSONATION_SENSITIVE_ROUTES: { match: (p: string) => boolean; methods: string[] }[] = [
   // Business settings / security surface (Store Settings, appearance, etc.)
   { match: (p) => p === '/api/businesses/me', methods: ['POST', 'PUT', 'PATCH', 'DELETE'] },
+  // Design Studio — designs are a business asset a platform admin shouldn't
+  // be mutating while impersonating (would look like the merchant saved it).
+  { match: (p) => p.startsWith('/api/storefront-designs'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'] },
   // Payment provider secrets (connect/update/disconnect)
   { match: (p) => p.startsWith('/api/payments/providers'), methods: ['PUT', 'DELETE'] },
 ];

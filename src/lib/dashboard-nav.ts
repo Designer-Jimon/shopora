@@ -132,9 +132,9 @@ export const DASHBOARD_NAV: DashboardNavSection[] = [
         permission: 'settings.read',
       },
       {
-        label: 'Appearance',
+        label: 'Design Studio',
         href: '/store/appearance',
-        description: 'Theme, logo and banner',
+        description: 'Design your storefront hero',
         permission: 'settings.read',
       },
       {

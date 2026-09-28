@@ -1,15 +1,26 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { getStorefrontBusiness, listNewArrivals, listStorefrontCategories } from '@/lib/storefront';
+import {
+  getStorefrontBusiness,
+  listNewArrivals,
+  listStorefrontCategories,
+  getStorefrontPublishedDesign,
+  getStorefrontLatestDesign,
+  canPreviewDraft,
+} from '@/lib/storefront';
+import DesignCover from '@/components/storefront-design/DesignCover';
 import ProductCard from '../_components/ProductCard';
 
 export const dynamic = 'force-dynamic';
 
 export default async function StoreHome({
   params,
+  searchParams,
 }: {
   params: { slug: string };
+  searchParams: Promise<{ preview?: string }>;
 }) {
+  const sp = await searchParams;
   const biz = await getStorefrontBusiness(params.slug);
   if (!biz) notFound();
 
@@ -18,13 +29,33 @@ export default async function StoreHome({
     listStorefrontCategories(biz.id),
   ]);
 
+  const previewOnly = sp.preview === '1' && (await canPreviewDraft(biz.id));
+  const design = previewOnly
+    ? await getStorefrontLatestDesign(biz.id)
+    : await getStorefrontPublishedDesign(biz.id);
+
   const hasBanner = !!biz.bannerUrl;
 
   return (
     <div>
+      {previewOnly && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-semibold text-amber-800">
+          Previewing the latest saved draft — visible only to your team. Publish, then check the public store to confirm.
+        </div>
+      )}
+
       {/* Hero */}
-      <section className="relative overflow-hidden">
-        {hasBanner ? (
+      {design ? (
+        <section className="relative overflow-hidden">
+          <DesignCover
+            doc={design}
+            buttonHref={`/${biz.slug}/products`}
+            uid={`cover-${biz.id}`}
+          />
+        </section>
+      ) : (
+        <section className="relative overflow-hidden">
+          {hasBanner ? (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -83,6 +114,7 @@ export default async function StoreHome({
           </div>
         </div>
       </section>
+      )}
 
       {/* Featured categories */}
       {categories.length > 0 && (

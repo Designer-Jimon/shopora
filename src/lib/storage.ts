@@ -102,8 +102,8 @@ function getR2Client(): S3Client {
 // Shared validation
 // ------------------------------------------------------------------
 
-function validate(data: Buffer, originalName: string, kind: 'logo' | 'banner' | 'product'): { maxBytes: number; ext: string } {
-  const isProduct = kind === 'product';
+function validate(data: Buffer, originalName: string, kind: 'logo' | 'banner' | 'product' | 'design'): { maxBytes: number; ext: string } {
+  const isProduct = kind === 'product' || kind === 'design';
   const maxBytes = isProduct ? IMAGE_MAX_BYTES : MAX_BYTES;
   if (data.length > maxBytes) {
     const mb = Math.round(maxBytes / (1024 * 1024));
@@ -118,12 +118,13 @@ function validate(data: Buffer, originalName: string, kind: 'logo' | 'banner' | 
   return { maxBytes, ext };
 }
 
-function relativeObjectKey(kind: 'logo' | 'banner' | 'product', ext: string): { filename: string; relDir: string } {
+function relativeObjectKey(kind: 'logo' | 'banner' | 'product' | 'design', ext: string): { filename: string; relDir: string } {
   const filename = `${crypto.randomUUID()}${ext}`;
   const dirMap: Record<string, string> = {
     logo: 'logos',
     banner: 'banners',
     product: 'products',
+    design: 'designs',
   };
   const relDir = path.join(dirMap[kind] ?? 'uploads', new Date().toISOString().slice(0, 10));
   return { filename, relDir };
@@ -140,7 +141,7 @@ function relativeObjectKey(kind: 'logo' | 'banner' | 'product', ext: string): { 
 export async function saveFile(
   data: Buffer,
   originalName: string,
-  kind: 'logo' | 'banner' | 'product' = 'logo',
+  kind: 'logo' | 'banner' | 'product' | 'design' = 'logo',
 ): Promise<StoredFile> {
   const { ext } = validate(data, originalName, kind);
 
@@ -166,7 +167,7 @@ export async function saveFile(
 async function saveFileR2(
   data: Buffer,
   originalName: string,
-  kind: 'logo' | 'banner' | 'product',
+  kind: 'logo' | 'banner' | 'product' | 'design',
   ext: string,
 ): Promise<StoredFile> {
   const { bucket, baseUrl } = getR2Config();

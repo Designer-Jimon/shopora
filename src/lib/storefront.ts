@@ -5,8 +5,11 @@
 
 import prisma from '@/lib/prisma';
 import { cache } from 'react';
+import { cookies } from 'next/headers';
+import { verifyAccessToken } from '@/lib/auth/jwt';
 import { resolveTheme, type BusinessTheme } from '@/lib/theme';
 import { serializeProduct, type SerializedProduct } from '@/lib/catalog';
+import type { StorefrontDesignDoc } from '@/lib/storefront-design/types';
 
 export type StorefrontBusiness = {
   id: string;
@@ -221,4 +224,58 @@ export async function getStorefrontProduct(
     include: PRODUCT_INCLUDE,
   });
   return row ? serializeProduct(row) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Storefront Design Studio integration (Part 2)
+//
+// Exactly ONE design can be `published` per business (enforced by the API on
+// PATCH). The storefront home renders that design as its hero when one exists
+// and falls back to the default banner/gradient hero otherwise. `?preview=1`
+// additionally shows the latest saved draft — but ONLY to the business's own
+// staff (settings.read), never to the public or to other tenants.
+// ---------------------------------------------------------------------------
+
+function toDesignDoc(row: { canvas: unknown; elements: unknown }): StorefrontDesignDoc | null {
+  if (!row || !row.canvas || !Array.isArray(row.elements)) return null;
+  return { canvas: row.canvas as StorefrontDesignDoc['canvas'], elements: row.elements as StorefrontDesignDoc['elements'] };
+}
+
+/** The live (published) design for a store, if any. */
+export async function getStorefrontPublishedDesign(businessId: string): Promise<StorefrontDesignDoc | null> {
+  const row = await prisma.storefrontDesign.findFirst({
+    where: { businessId, status: 'published' },
+    orderBy: { updatedAt: 'desc' },
+    select: { canvas: true, elements: true },
+  });
+  return row ? toDesignDoc(row) : null;
+}
+
+/** The latest saved design (any status) — only surfaced when canPreviewDraft. */
+export async function getStorefrontLatestDesign(businessId: string): Promise<StorefrontDesignDoc | null> {
+  const row = await prisma.storefrontDesign.findFirst({
+    where: { businessId },
+    orderBy: { updatedAt: 'desc' },
+    select: { canvas: true, elements: true },
+  });
+  return row ? toDesignDoc(row) : null;
+}
+
+/**
+ * Draft-preview authorization for the PUBLIC storefront. Returns true only for
+ * the business's own staff with settings.read — the same permission the design
+ * editor requires — so `?preview=1` never leaks another tenant's draft.
+ */
+export async function canPreviewDraft(businessId: string): Promise<boolean> {
+  const token = (await cookies()).get('shopora_session')?.value;
+  if (!token) return false;
+  const claims = await verifyAccessToken(token, process.env.JWT_ACCESS_SECRET!);
+  if (!claims?.sub || claims.role !== 'business_user' || claims.businessId !== businessId) return false;
+
+  const staff = await prisma.businessStaff.findFirst({
+    where: { userId: claims.sub, businessId, isActive: true },
+    select: { role: { select: { permissions: { select: { permission: { select: { name: true } } } } } } },
+  });
+  if (!staff) return false;
+  return staff.role.permissions.some((p) => p.permission.name === 'settings.read');
 }
